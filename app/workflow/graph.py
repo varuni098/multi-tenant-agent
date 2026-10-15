@@ -1,79 +1,77 @@
+import logging
 from typing import TypedDict
-from langgraph.graph import StateGraph, END
-from agent import agent  # Importing Pydantic AI agent
-from agent_backend import get_all_tenant_pages
 
-# 1. Define the shared state dictionary passed across workflow steps
+from langgraph.graph import END, StateGraph
+
+from app.agent.agent import agent
+from app.db.repository import get_all_tenant_pages
+
+log = logging.getLogger(__name__)
+
+
+# 1. Shared state passed across workflow steps
 class TenantWorkflowState(TypedDict):
     prompt: str
     tenant_uuid: str
     is_valid: bool
     agent_response: str
 
-# 2. Define Graph Nodes (Steps)
+
+# 2. Graph nodes
 def check_tenant_node(state: TenantWorkflowState):
-    """Step 1: Verify if the tenant UUID exists in the database."""
-    print(f"\n[LangGraph] Step 1: Validating tenant UUID -> {state['tenant_uuid']}")
-    
-    # Query database using your existing backend tool
+    """Step 1: Verify the tenant UUID exists in the database."""
+    log.info("Step 1: validating tenant UUID %s", state["tenant_uuid"])
     pages = get_all_tenant_pages()
-    
-    # Check if the requested tenant_uuid exists in the database records
-    valid_uuids = {p.get('tenant_uuid') for p in pages} if pages else set()
-    
-    # For testing convenience, if your table is empty or matches, handle it:
-    state["is_valid"] = state["tenant_uuid"] in valid_uuids or len(valid_uuids) == 0
-    
-    if state["is_valid"]:
-        print("[LangGraph] Status: Tenant Verified Successfully.")
-    else:
-        print("[LangGraph] Status: Tenant NOT found in database.")
-        
+    valid_uuids = {p["tenant_uuid"] for p in pages}
+
+    # An empty table allows everything, for testing convenience
+    state["is_valid"] = state["tenant_uuid"] in valid_uuids or not valid_uuids
+    log.info("Tenant %s", "verified" if state["is_valid"] else "NOT found")
     return state
 
+
 def run_agent_node(state: TenantWorkflowState):
-    """Step 2: Run the Pydantic AI agent if validation passes."""
-    print("[LangGraph] Step 2: Handing over to Pydantic AI Agent...")
+    """Step 2: Run the Pydantic AI agent once validation passes."""
+    log.info("Step 2: handing over to agent")
     result = agent.run_sync(state["prompt"])
     state["agent_response"] = result.output
     return state
 
+
 def denied_node(state: TenantWorkflowState):
-    """Alternative Step: Block execution if tenant is invalid."""
-    print("[LangGraph] Status: Execution blocked by security policy.")
+    """Alternative step: block execution for an invalid tenant."""
+    log.info("Execution blocked by security policy")
     state["agent_response"] = "Operation blocked: Invalid or inactive tenant UUID."
     return state
 
-# 3. Define Conditional Routing Logic
+
+# 3. Conditional routing
 def route_after_check(state: TenantWorkflowState):
-    if state["is_valid"]:
-        return "run_agent"
-    return "block_execution"
+    return "run_agent" if state["is_valid"] else "block_execution"
 
-# 4. Build and Compile the StateGraph
+
+# 4. Build and compile the graph
 workflow = StateGraph(TenantWorkflowState)
-
-# Add nodes to the graph
 workflow.add_node("check_tenant", check_tenant_node)
 workflow.add_node("run_agent", run_agent_node)
 workflow.add_node("denied", denied_node)
-
-# Set the entry point of the workflow
 workflow.set_entry_point("check_tenant")
-
-# Add conditional edges branching out from the check node
 workflow.add_conditional_edges(
     "check_tenant",
     route_after_check,
-    {
-        "run_agent": "run_agent",
-        "block_execution": "denied"
-    }
+    {"run_agent": "run_agent", "block_execution": "denied"},
 )
-
-# Connect terminal nodes to the END state
 workflow.add_edge("run_agent", END)
 workflow.add_edge("denied", END)
 
-# Compile the graph into an executable app
 app_graph = workflow.compile()
+
+
+def run_workflow(prompt: str, tenant_uuid: str) -> TenantWorkflowState:
+    initial_state: TenantWorkflowState = {
+        "prompt": prompt,
+        "tenant_uuid": tenant_uuid,
+        "is_valid": False,
+        "agent_response": "",
+    }
+    return app_graph.invoke(initial_state)  # type: ignore[return-value]

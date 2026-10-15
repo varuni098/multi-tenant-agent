@@ -1,0 +1,43 @@
+# Development overrides, loaded automatically by `docker compose`.
+services:
+  ollama:
+    ports:
+      - "11435:11434"   # host 11434 is used by the native Ollama app
+
+  mysql:
+    ports:
+      - "3308:3306"     # 3306/3307 are already taken on the host
+
+  migrate:
+    build:
+      args:
+        INSTALL_DEV: "true"
+    # Dev also loads idempotent demo data
+    command: ["sh", "-c", "alembic upgrade head && python -m app.db.seed"]
+
+  app:
+    build:
+      args:
+        INSTALL_DEV: "true"
+    command: ["uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    # `--watch`: code edits sync into the container and uvicorn reloads;
+    # dependency or Dockerfile changes trigger a rebuild.
+    develop:
+      watch:
+        - action: sync
+          path: .
+          target: /app
+          ignore:
+            - .git/
+            - .env
+            - .venv/
+            - __pycache__/
+            - .pytest_cache/
+            - .mypy_cache/
+            - .ruff_cache/
+        - action: rebuild
+          path: requirements.txt
+        - action: rebuild
+          path: requirements-dev.txt
+        - action: rebuild
+          path: Dockerfile

@@ -1,14 +1,22 @@
+# Base stack, shared by every environment.
+#   dev  (default): docker compose up --build --watch      (auto-loads compose.override.yml)
+#   prod:           docker compose -f compose.yml -f compose.prod.yml up -d --build
 name: multi-tenant-agent
+
+x-db-env: &db-env
+  DB_HOST: mysql
+  DB_PORT: 3306
+  DB_USER: root
+  DB_PASSWORD: ${DOCKER_DB_PASSWORD:-agentpass}
+  DB_NAME: multi_tenant_agent_db
 
 services:
   ollama:
     image: ollama/ollama:latest
     volumes:
       - ollama_models:/root/.ollama
-    ports:
-      - "11435:11434"   # host 11434 is used by the native Ollama app
     environment:
-      OLLAMA_KEEP_ALIVE: 30m
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
     deploy:
       resources:
         reservations:
@@ -39,48 +47,36 @@ services:
       MYSQL_DATABASE: multi_tenant_agent_db
     volumes:
       - mysql_data:/var/lib/mysql
-      - ./docker/mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    ports:
-      - "3308:3306"     # 3306/3307 are already taken on the host
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${DOCKER_DB_PASSWORD:-agentpass}"]
       interval: 5s
       timeout: 5s
       retries: 20
 
+  # One-shot job: applies Alembic migrations before the app starts
+  migrate:
+    build: .
+    environment: *db-env
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+
   app:
     build: .
     ports:
       - "8000:8000"
     environment:
-      DB_HOST: mysql
-      DB_PORT: 3306
-      DB_USER: root
-      DB_PASSWORD: ${DOCKER_DB_PASSWORD:-agentpass}
-      DB_NAME: multi_tenant_agent_db
+      <<: *db-env
       OLLAMA_BASE_URL: http://ollama:11434/v1
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:8b}
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
     depends_on:
-      mysql:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       ollama-pull:
         condition: service_completed_successfully
-    # `docker compose up --watch`: code edits sync into the container and
-    # uvicorn --reload picks them up; dependency changes trigger a rebuild.
-    develop:
-      watch:
-        - action: sync
-          path: .
-          target: /app
-          ignore:
-            - .git/
-            - .env
-            - __pycache__/
-            - docker/
-        - action: rebuild
-          path: requirements.txt
-        - action: rebuild
-          path: Dockerfile
 
 volumes:
   ollama_models:

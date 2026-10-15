@@ -1,0 +1,20 @@
+# Production overrides: docker compose -f compose.yml -f compose.prod.yml up -d --build
+# No dev ports, no reload, restart on failure, resource limits.
+services:
+  ollama:
+    restart: unless-stopped
+
+  mysql:
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+
+  app:
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2g
