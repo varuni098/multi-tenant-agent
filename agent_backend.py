@@ -6,9 +6,10 @@ load_dotenv()
 
 DB_CONFIG = {
     "host": os.getenv("DB_HOST", "localhost"),
-    "user": os.getenv("DB_USER", "root"),       
-    "password": os.getenv("DB_PASSWORD", ""), 
-    "database": "multi_tenant_agent_db"
+    "port": int(os.getenv("DB_PORT", "3306")),
+    "user": os.getenv("DB_USER", "root"),
+    "password": os.getenv("DB_PASSWORD", ""),
+    "database": os.getenv("DB_NAME", "multi_tenant_agent_db")
 }
 
 def get_db_connection():

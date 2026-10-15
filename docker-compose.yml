@@ -1,0 +1,87 @@
+name: multi-tenant-agent
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama_models:/root/.ollama
+    ports:
+      - "11435:11434"   # host 11434 is used by the native Ollama app
+    environment:
+      OLLAMA_KEEP_ALIVE: 30m
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # One-shot job: pulls the model into the ollama volume (no-op once cached)
+  ollama-pull:
+    image: ollama/ollama:latest
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["ollama", "pull", "${OLLAMA_MODEL:-qwen3:8b}"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DOCKER_DB_PASSWORD:-agentpass}
+      MYSQL_DATABASE: multi_tenant_agent_db
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./docker/mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "3308:3306"     # 3306/3307 are already taken on the host
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${DOCKER_DB_PASSWORD:-agentpass}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: root
+      DB_PASSWORD: ${DOCKER_DB_PASSWORD:-agentpass}
+      DB_NAME: multi_tenant_agent_db
+      OLLAMA_BASE_URL: http://ollama:11434/v1
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:8b}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      ollama-pull:
+        condition: service_completed_successfully
+    # `docker compose up --watch`: code edits sync into the container and
+    # uvicorn --reload picks them up; dependency changes trigger a rebuild.
+    develop:
+      watch:
+        - action: sync
+          path: .
+          target: /app
+          ignore:
+            - .git/
+            - .env
+            - __pycache__/
+            - docker/
+        - action: rebuild
+          path: requirements.txt
+        - action: rebuild
+          path: Dockerfile
+
+volumes:
+  ollama_models:
+  mysql_data:
