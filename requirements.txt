@@ -195,6 +195,8 @@ more-itertools==11.2.1
     #   jaraco-functools
 mysql-connector-python==26.7.0
     # via -r requirements.in
+neo4j==6.4.1
+    # via -r requirements.in
 openai==3.31.0
     # via pydantic-ai-slim
 openapi-pydantic==0.6.0
@@ -221,6 +223,8 @@ packaging==26.3
     #   reflex-hosting-cli
 pathable==0.6.0
     # via jsonschema-path
+pika==1.4.4
+    # via -r requirements.in
 platformdirs==4.13.0
     # via
     #   fastmcp-slim
@@ -281,8 +285,11 @@ python-multipart==0.0.32
     #   reflex-components-core
 python-socketio==5.17.0
     # via reflex
+pytz==2026.5
+    # via neo4j
 pyyaml==6.0.3
     # via
+    #   -r requirements.in
     #   fastmcp-slim
     #   jsonschema-path
     #   langchain-core

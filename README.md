@@ -14,6 +14,10 @@ app/
   harness/    auth (JWT), RBAC policy, guardrails, intent, rate limits, session
               memory, model reliability, state store, tenant-mcp client
   mcp_server/ tenant-mcp: MCP tools, caller auth, confirmations, internal routes
+  graph/      knowledge graph: ontology loader, projection, validator, drift,
+              rules, queries, outbox relay, sync worker, reconciler
+  graph_mcp/  graph-mcp: read-only graph tools + the can_apply write gate
+ontology/     ontology.yaml (classes, relationships, cardinality, rules, aliases)
   agent/      Pydantic AI agent + tools, model warm-up
   workflow/   LangGraph request flow
   api/        FastAPI app (/v1/chat, /v1/chat/confirm, /health, /ready)
@@ -45,9 +49,10 @@ Effective value of a setting: **page override → tenant default → template �
 ## Architecture
 
 ```
-client --JWT--> app (FastAPI + harness + agent) --MCP + signed context--> tenant-mcp --> MySQL
-                     |            \--> Ollama (qwen3:8b)                   ^
-                     \--> Redis (sessions, rate limits)    external MCP clients (user JWT)
+client --JWT--> app (harness + agent) --MCP--> tenant-mcp --> MySQL --outbox--> outbox-relay --> RabbitMQ
+                  |   |   \--MCP + can_apply gate--> graph-mcp --> Neo4j <-- graph-sync <------/
+                  |   \--> Ollama (qwen3:8b)                       (re-projects tenants, reconciles)
+                  \--> Redis                     external MCP clients (user JWT) -> tenant-mcp / graph-mcp
 ```
 
 - **tenant-mcp** (`app/mcp_server/`) is the only service with database credentials, and
@@ -65,6 +70,59 @@ client --JWT--> app (FastAPI + harness + agent) --MCP + signed context--> tenant
   redacted args, outcome, duration, request ID), including denied and failed calls.
 - **Tool annotations** (`readOnlyHint`, `destructiveHint`, `idempotentHint`) come from the
   same policy table the harness uses (`app/harness/policy.py`).
+
+## Knowledge graph
+
+**Ontology** (`ontology/ontology.yaml`, version 1) is the single source of truth for the
+graph's shape:
+
+- **Classes:** Tenant, User, Page, Setting, ChangeEvent (tenant-scoped); Role, Action, Plan,
+  Feature, SettingKey, Template (shared). DocChunk and Concept are declared for Phase 6.
+- **Relationships with cardinality:** MEMBER_OF, HAS_ROLE, MAY, SUBSCRIBES_TO, INCLUDES,
+  REQUIRES, INHERITS_FROM, DEFINES, OWNS, HAS_SETTING, OF_KEY, CHANGED.
+- **Rules,** in the order `can_apply` evaluates them: `tenant_active`, `permission`,
+  `known_setting`, `allowed_value`, `entitlement`.
+- **Inheritance order:** page, then tenant, then template, then default.
+- **Aliases** for entity resolution ("accent colour" -> `brand_color`).
+
+**Sync.** Every change writes an outbox row in the same transaction. `outbox-relay`
+publishes it to RabbitMQ (exchange `tenant.events`, at-least-once), and `graph-sync`
+re-reads that tenant from MySQL and replaces its subgraph in one Neo4j transaction:
+
+- That makes events idempotent and safe to receive out of order.
+- Failed messages go to `graph-sync.dlq`.
+- `graph-sync` also reconciles at startup and every `RECONCILE_INTERVAL_SECONDS`
+  (default 3600), repairing any drift.
+- Measured lag from commit to graph is about 2 s.
+
+**Graph tools** (`graph-mcp`, read-only, tenant-pinned, fixed Cypher only):
+
+| Tool | Agent | Notes |
+|---|---|---|
+| `explain_setting` | viewer+ | why a value is what it is, with the inheritance chain |
+| `can_apply` | viewer+ | allowed or denied, the deciding rule, and the graph path |
+| `impact_of_change` | admin | what a template switch would change on this tenant's pages |
+| `graph_effective_settings`, `resolve_entity`, `find_related` | external clients only | `find_related` paths never cross into another tenant |
+
+**Write gate.** With `GRAPH_MODE=enforce` (the compose default), the harness asks
+`can_apply` before any `set_theme`, `set_setting`, `bulk_set_setting` or `create_page`
+reaches tenant-mcp:
+
+- A denial is returned to the model with the ontology rule, and listed in the response's
+  `denials[]`.
+- If the policy engine is unreachable, writes are refused (fail closed).
+- `advisory` only records denials; `off` disables the graph entirely. tenant-mcp still
+  validates every write regardless.
+
+**Operations:**
+
+```bash
+docker compose exec graph-sync python -m app.graph.validate           # graph vs ontology; exit 1 on violations
+docker compose exec graph-sync python -m app.graph.reconcile --check  # drift report; exit 1 on drift
+docker compose exec graph-sync python -m app.graph.reconcile          # repair drift
+```
+
+Neo4j Browser: http://localhost:7475 (dev) · RabbitMQ UI: http://localhost:15673 (user `agent`)
 
 ## Agent tools
 
@@ -119,6 +177,11 @@ JWT -> rate limit -> check_tenant -> guard_input -> classify -> run_agent | off_
 | `ollama-pull` | One-shot: pulls `$OLLAMA_MODEL`              | –             |
 | `mysql`       | MySQL 8                                      | 3308          |
 | `tenant-mcp`  | MCP tool server; only service with DB access | 8001          |
+| `graph-mcp`   | Graph tools + can_apply gate (Neo4j only)    | 8002          |
+| `neo4j`       | Knowledge graph                              | 7475 / 7688   |
+| `rabbitmq`    | Event broker (outbox -> graph-sync)          | 15673 (UI)    |
+| `outbox-relay`| MySQL outbox -> RabbitMQ                     | –             |
+| `graph-sync`  | RabbitMQ -> Neo4j projection, reconciler     | –             |
 | `redis`       | Sessions, rate limits, confirmations         | –             |
 | `migrate`     | One-shot: `alembic upgrade head` (+ seed in dev) | –         |
 
@@ -135,10 +198,16 @@ docker compose up --build --watch
 `compose.override.yml` is loaded automatically: code edits sync into the
 container and uvicorn reloads; changes to requirements or the Dockerfile rebuild.
 
-Checks (inside the dev image):
+Checks (inside the dev image; unit tests need no Neo4j/RabbitMQ):
 
 ```bash
 docker compose run --rm --no-deps app sh -c "ruff check . && ruff format --check . && mypy && pytest"
+```
+
+Integration tests (throwaway Neo4j + RabbitMQ):
+
+```bash
+docker compose --profile test run --rm tests
 ```
 
 Optional git hooks: `pip install pre-commit && pre-commit install`.
@@ -211,7 +280,9 @@ docker run --rm -v "$PWD:/src" -w /src python:3.12-slim sh -c "pip install -q uv
 
 See `.env.example`. Key settings: `OLLAMA_MODEL` (default `qwen3:8b`; alternatives
 `llama3.1:8b`, `qwen3:14b` with more VRAM), `OLLAMA_FALLBACK_MODEL`, `JWT_SECRET` /
-`JWT_JWKS_URL`, `REDIS_URL`, `RATE_LIMIT_*`, `DOCKER_DB_PASSWORD`, `LOG_LEVEL`.
+`JWT_JWKS_URL`, `REDIS_URL`, `RATE_LIMIT_*`, `DOCKER_DB_PASSWORD`, `LOG_LEVEL`,
+`GRAPH_MODE` (off/advisory/enforce), `NEO4J_PASSWORD`, `RABBITMQ_PASSWORD`,
+`RECONCILE_INTERVAL_SECONDS`.
 
 ## GPU
 

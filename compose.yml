@@ -2,8 +2,11 @@
 #   dev  (default): docker compose up --build --watch      (auto-loads compose.override.yml)
 #   prod:           docker compose -f compose.yml -f compose.prod.yml up -d --build
 #
-# Networks: only tenant-mcp and the one-shot migrate job can reach MySQL ("data").
-# The agent app has no database credentials and no route to the database.
+# Networks (the agent app is on "services" only: no route to MySQL, Neo4j or RabbitMQ):
+#   data:     MySQL      <- migrate, tenant-mcp, outbox-relay, graph-sync
+#   graph:    Neo4j      <- graph-mcp, graph-sync
+#   broker:   RabbitMQ   <- outbox-relay, graph-sync
+#   services: app, tenant-mcp, graph-mcp, redis, ollama
 name: multi-tenant-agent
 
 x-db-env: &db-env
@@ -20,6 +23,14 @@ x-auth-env: &auth-env
   JWT_JWKS_URL: ${JWT_JWKS_URL:-}
   MCP_CONTEXT_SECRET: ${MCP_CONTEXT_SECRET:-dev-insecure-mcp-context-secret-0123456789}
   REDIS_URL: redis://redis:6379/0
+
+x-graph-env: &graph-env
+  NEO4J_URI: bolt://neo4j:7687
+  NEO4J_USER: neo4j
+  NEO4J_PASSWORD: ${NEO4J_PASSWORD:-dev-graph-password}
+
+x-broker-env: &broker-env
+  RABBITMQ_URL: amqp://agent:${RABBITMQ_PASSWORD:-dev-broker-password}@rabbitmq:5672/
 
 services:
   ollama:
@@ -107,6 +118,82 @@ services:
       timeout: 3s
       retries: 20
 
+  # --- Knowledge graph (Phase 5) ---
+
+  neo4j:
+    image: neo4j:5.26-community
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-dev-graph-password}
+      NEO4J_server_memory_heap_max__size: 512m
+      NEO4J_server_memory_pagecache_size: 256m
+    volumes:
+      - neo4j_data:/data
+    networks: [graph]
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p \"$${NEO4J_AUTH#neo4j/}\" 'RETURN 1' > /dev/null"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: agent
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-dev-broker-password}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks: [broker]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+
+  # Publishes the MySQL outbox to RabbitMQ
+  outbox-relay:
+    build: .
+    command: ["python", "-m", "app.graph.relay"]
+    environment:
+      <<: [*db-env, *broker-env]
+    networks: [data, broker]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+
+  # Consumes tenant events and re-projects tenants into Neo4j; reconciles periodically
+  graph-sync:
+    build: .
+    command: ["python", "-m", "app.graph.sync"]
+    environment:
+      <<: [*db-env, *graph-env, *broker-env]
+      RECONCILE_INTERVAL_SECONDS: ${RECONCILE_INTERVAL_SECONDS:-3600}
+    networks: [data, graph, broker]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      neo4j:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  # MCP server for the knowledge graph (read-only) and the can_apply write gate
+  graph-mcp:
+    build: .
+    command: ["uvicorn", "app.graph_mcp.server:app", "--host", "0.0.0.0", "--port", "8002", "--workers", "2"]
+    environment:
+      <<: [*auth-env, *graph-env]
+    networks: [graph, services]
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   app:
     build: .
     ports:
@@ -118,18 +205,79 @@ services:
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:8b}
       OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
       OLLAMA_FALLBACK_MODEL: ${OLLAMA_FALLBACK_MODEL:-}
+      GRAPH_MODE: ${GRAPH_MODE:-enforce}
+      GRAPH_MCP_URL: http://graph-mcp:8002/mcp
     networks: [services]
     depends_on:
       tenant-mcp:
         condition: service_healthy
+      graph-mcp:
+        condition: service_started # the app runs without the graph (gate per GRAPH_MODE)
       ollama-pull:
         condition: service_completed_successfully
+
+  # --- Integration tests: `docker compose --profile test run --rm tests` ---
+
+  neo4j-test:
+    image: neo4j:5.26-community
+    profiles: [test]
+    environment:
+      NEO4J_AUTH: neo4j/test-graph-password
+      NEO4J_server_memory_heap_max__size: 256m
+      NEO4J_server_memory_pagecache_size: 64m
+    tmpfs: [/data]
+    networks: [test]
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p test-graph-password 'RETURN 1' > /dev/null"]
+      interval: 5s
+      timeout: 10s
+      retries: 40
+
+  rabbitmq-test:
+    image: rabbitmq:3.13-management-alpine
+    profiles: [test]
+    environment:
+      RABBITMQ_DEFAULT_USER: test
+      RABBITMQ_DEFAULT_PASS: test
+    tmpfs: [/var/lib/rabbitmq]
+    networks: [test]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+
+  tests:
+    build:
+      context: .
+      args:
+        INSTALL_DEV: "true"
+    profiles: [test]
+    command: ["pytest", "-p", "no:cacheprovider", "-q"]
+    environment:
+      NEO4J_URI: bolt://neo4j-test:7687
+      NEO4J_PASSWORD: test-graph-password
+      RABBITMQ_URL: amqp://test:test@rabbitmq-test:5672/
+      RUN_INTEGRATION: "1"
+    networks: [test]
+    depends_on:
+      neo4j-test:
+        condition: service_healthy
+      rabbitmq-test:
+        condition: service_healthy
 
 networks:
   services:
   data:
     internal: true # no outbound internet from the database network
+  graph:
+    internal: true
+  broker:
+    internal: true
+  test:
 
 volumes:
   ollama_models:
   mysql_data:
+  neo4j_data:
+  rabbitmq_data:

@@ -12,11 +12,12 @@ from langgraph.graph import END, StateGraph
 from pydantic_ai.exceptions import UnexpectedModelBehavior, UsageLimitExceeded
 
 from app.harness import memory
-from app.harness.context import Action, Caller, PendingConfirmation, RunDeps
+from app.harness.context import Action, Caller, Denial, PendingConfirmation, RunDeps
 from app.harness.guardrails import check_input, redact
 from app.harness.intent import OFF_TOPIC_REPLY, classify
 from app.harness.policy import TOOL_POLICIES, Intent, allowed_tools
 from app.harness.reliability import ModelUnavailable, run_agent
+from app.harness.tenant_client import graph_available
 
 log = logging.getLogger(__name__)
 
@@ -30,6 +31,7 @@ class ChatResult:
     intent: Intent | None = None
     blocked: bool = False
     actions: list[Action] = field(default_factory=list)
+    denials: list[Denial] = field(default_factory=list)
     confirmation: PendingConfirmation | None = None
     model: str | None = None
 
@@ -74,7 +76,7 @@ def run_agent_node(state: State) -> State:
     deps = RunDeps(
         identity=identity,
         request_id=state["request_id"],
-        allowed_tools=allowed_tools(identity.role, intent),
+        allowed_tools=allowed_tools(identity.role, intent, graph=graph_available()),
     )
     # A write request from a role with no write tools fails as a permission issue, not "rephrase"
     can_write = any(TOOL_POLICIES[t].writes for t in deps.allowed_tools)
@@ -102,7 +104,12 @@ def run_agent_node(state: State) -> State:
     elif deps.verification_failed and not deps.actions:
         answer = failure_reply
     state["result"] = ChatResult(
-        answer=answer, intent=intent, actions=deps.actions, confirmation=confirmation, model=model
+        answer=answer,
+        intent=intent,
+        actions=deps.actions,
+        denials=deps.denials,
+        confirmation=confirmation,
+        model=model,
     )
     return state
 

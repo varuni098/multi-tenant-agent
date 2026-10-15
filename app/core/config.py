@@ -7,6 +7,7 @@ from sqlalchemy.engine import URL
 
 DEV_JWT_SECRET = "dev-insecure-secret-change-me-0123456789"
 DEV_MCP_CONTEXT_SECRET = "dev-insecure-mcp-context-secret-0123456789"
+DEV_NEO4J_PASSWORD = "dev-graph-password"
 
 
 class Settings(BaseSettings):
@@ -63,12 +64,30 @@ class Settings(BaseSettings):
     mcp_context_secret: str = DEV_MCP_CONTEXT_SECRET
     mcp_context_ttl_seconds: int = 600
 
+    # Knowledge graph (Phase 5). graph_mode: off = no graph tools or gate;
+    # advisory = gate logs denials but lets writes through; enforce = gate blocks them.
+    graph_mode: Literal["off", "advisory", "enforce"] = "off"
+    graph_mcp_url: str = "http://localhost:8002/mcp"
+    neo4j_uri: str = "bolt://localhost:7687"
+    neo4j_user: str = "neo4j"
+    neo4j_password: str = DEV_NEO4J_PASSWORD
+    rabbitmq_url: str = "amqp://guest:guest@localhost:5672/"
+    relay_poll_seconds: float = 0.5
+    reconcile_interval_seconds: int = 3600
+    graph_change_events_per_tenant: int = 50
+
+    @property
+    def graph_mcp_base_url(self) -> str:
+        return self.graph_mcp_url.removesuffix("/").removesuffix("/mcp")
+
     @model_validator(mode="after")
     def _check_prod_secrets(self) -> "Settings":
         if self.app_env == "prod" and not self.jwt_jwks_url and self.jwt_secret == DEV_JWT_SECRET:
             raise ValueError("APP_ENV=prod requires JWT_SECRET (or JWT_JWKS_URL) to be set")
         if self.app_env == "prod" and self.mcp_context_secret == DEV_MCP_CONTEXT_SECRET:
             raise ValueError("APP_ENV=prod requires MCP_CONTEXT_SECRET to be set")
+        if self.app_env == "prod" and self.graph_mode != "off" and self.neo4j_password == DEV_NEO4J_PASSWORD:
+            raise ValueError("APP_ENV=prod with the graph enabled requires NEO4J_PASSWORD to be set")
         return self
 
     @property

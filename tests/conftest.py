@@ -14,11 +14,14 @@ def _free_port() -> int:
 # Must be set before any app module reads settings
 _db_file = os.path.join(tempfile.mkdtemp(), "test.db")
 _mcp_port = _free_port()
+_graph_port = _free_port()
 os.environ["DATABASE_URL"] = f"sqlite:///{_db_file}"
 os.environ["WARMUP_ON_STARTUP"] = "false"
 os.environ["REDIS_URL"] = ""
 os.environ["OLLAMA_FALLBACK_MODEL"] = ""
 os.environ["TENANT_MCP_URL"] = f"http://127.0.0.1:{_mcp_port}/mcp"
+os.environ["GRAPH_MCP_URL"] = f"http://127.0.0.1:{_graph_port}/mcp"
+os.environ["GRAPH_MODE"] = "off"  # unit tests run without Neo4j; graph tests opt in via the settings fixture
 
 from collections.abc import Callable  # noqa: E402
 from typing import Any  # noqa: E402
@@ -40,6 +43,27 @@ from app.harness.store import get_store  # noqa: E402
 __all__ = ["TENANT_A", "TENANT_B"]
 
 MCP_URL = os.environ["TENANT_MCP_URL"]
+GRAPH_URL = os.environ["GRAPH_MCP_URL"]
+GRAPH_PORT = _graph_port
+
+
+def start_server(app, port: int):
+    """Run an ASGI app in a background thread; returns a stop() function."""
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 15
+    while not server.started:
+        if time.monotonic() > deadline:
+            raise RuntimeError(f"test server on port {port} did not start")
+        time.sleep(0.05)
+
+    def stop() -> None:
+        server.should_exit = True
+        thread.join(timeout=5)
+
+    return stop
+
 
 ADMIN_A = Identity(TENANT_A, "admin@acme.test", "admin")
 EDITOR_A = Identity(TENANT_A, "editor@acme.test", "editor")
@@ -57,17 +81,9 @@ def tenant_mcp_server():
     """A real tenant-mcp server on a free port, sharing this process's SQLite DB and store."""
     from app.mcp_server.server import app
 
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=_mcp_port, log_level="warning"))
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
-    deadline = time.monotonic() + 15
-    while not server.started:
-        if time.monotonic() > deadline:
-            raise RuntimeError("tenant-mcp test server did not start")
-        time.sleep(0.05)
+    stop = start_server(app, _mcp_port)
     yield MCP_URL
-    server.should_exit = True
-    thread.join(timeout=5)
+    stop()
 
 
 @pytest.fixture(autouse=True)
@@ -87,9 +103,12 @@ def db():
 
 @pytest.fixture(autouse=True)
 def fresh_harness_state():
-    """New in-memory store and circuit breakers per test."""
+    """New in-memory store, circuit breakers and graph health cache per test."""
+    from app.harness import tenant_client
+
     get_store.cache_clear()
     _candidates.cache_clear()
+    tenant_client._graph_health.update(checked=0.0, ok=False)
     yield
 
 

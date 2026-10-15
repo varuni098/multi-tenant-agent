@@ -29,7 +29,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="Multi-Tenant Agent", version="0.4.0", lifespan=lifespan)
+app = FastAPI(title="Multi-Tenant Agent", version="0.5.0", lifespan=lifespan)
 bearer = HTTPBearer(auto_error=False)
 
 
@@ -74,6 +74,12 @@ class ActionOut(BaseModel):
     message: str
 
 
+class DenialOut(BaseModel):
+    tool: str
+    rule: str
+    reason: str
+
+
 class ConfirmationOut(BaseModel):
     token: str
     summary: str
@@ -85,6 +91,7 @@ class ChatResponse(BaseModel):
     intent: str | None
     blocked: bool
     actions: list[ActionOut]
+    denials: list[DenialOut]
     requires_confirmation: bool
     confirmation: ConfirmationOut | None
     model: str | None
@@ -130,6 +137,7 @@ def chat(req: ChatRequest, request: Request, caller: Annotated[Caller, Depends(r
         intent=result.intent,
         blocked=result.blocked,
         actions=[ActionOut(tool=a.tool, message=a.message) for a in result.actions],
+        denials=[DenialOut(tool=d.tool, rule=d.rule, reason=d.reason) for d in result.denials],
         requires_confirmation=result.confirmation is not None,
         confirmation=ConfirmationOut(**vars(result.confirmation)) if result.confirmation else None,
         model=result.model,

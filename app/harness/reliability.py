@@ -16,7 +16,7 @@ from pydantic_ai.usage import UsageLimits
 from app.agent.agent import agent
 from app.core.config import get_settings
 from app.harness.context import RunDeps
-from app.harness.tenant_client import build_toolset
+from app.harness.tenant_client import build_toolsets
 
 log = logging.getLogger(__name__)
 
@@ -87,7 +87,7 @@ def run_agent(prompt: str, deps: RunDeps, history: list[ModelMessage]) -> tuple[
                 deps=deps,
                 model=candidate.model,
                 message_history=history,
-                toolsets=[build_toolset(deps)],
+                toolsets=build_toolsets(deps),
                 usage_limits=limits,
                 model_settings={"timeout": s.llm_timeout_seconds},
             )

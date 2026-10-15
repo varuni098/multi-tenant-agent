@@ -14,6 +14,31 @@ services:
   redis:
     restart: unless-stopped
 
+  neo4j:
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?Set NEO4J_PASSWORD for production}
+
+  rabbitmq:
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD for production}
+
+  outbox-relay:
+    restart: unless-stopped
+
+  graph-sync:
+    restart: unless-stopped
+    environment:
+      APP_ENV: prod
+
+  graph-mcp:
+    restart: unless-stopped
+    environment:
+      APP_ENV: prod
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET (or JWT_JWKS_URL) for production}
+      MCP_CONTEXT_SECRET: ${MCP_CONTEXT_SECRET:?Set MCP_CONTEXT_SECRET for production}
+
   tenant-mcp:
     restart: unless-stopped
     environment:

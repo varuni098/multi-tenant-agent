@@ -33,6 +33,15 @@ class Action:
 
 
 @dataclass
+class Denial:
+    """A write the policy gate refused, with the ontology rule that decided it."""
+
+    tool: str
+    rule: str
+    reason: str
+
+
+@dataclass
 class PendingConfirmation:
     token: str
     tool: str
@@ -49,5 +58,6 @@ class RunDeps:
     allowed_tools: frozenset[str]
     actions: list[Action] = field(default_factory=list)
     confirmations: list[PendingConfirmation] = field(default_factory=list)
+    denials: list[Denial] = field(default_factory=list)
     verify_retries: int = 0
     verification_failed: bool = False

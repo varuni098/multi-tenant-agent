@@ -47,11 +47,40 @@ services:
     command: ["uvicorn", "app.mcp_server.server:app", "--host", "0.0.0.0", "--port", "8001", "--reload"]
     develop: *dev-watch
 
+  neo4j:
+    ports:
+      - "7475:7474"     # Neo4j Browser (host 7474 may be in use)
+      - "7688:7687"
+
+  rabbitmq:
+    ports:
+      - "15673:15672"   # management UI (host 15672 is in use)
+
+  outbox-relay:
+    <<: *dev-build
+    develop: *dev-watch
+
+  graph-sync:
+    <<: *dev-build
+    develop: *dev-watch
+
+  graph-mcp:
+    <<: *dev-build
+    ports:
+      - "8002:8002"     # for external MCP clients in dev
+    command: ["uvicorn", "app.graph_mcp.server:app", "--host", "0.0.0.0", "--port", "8002", "--reload"]
+    develop: *dev-watch
+
   app:
     <<: *dev-build
     command: ["uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
     develop: *dev-watch
 
 networks:
+  # dev only: lets the host reach MySQL (3308), Neo4j (7475/7688) and RabbitMQ's UI (15673)
   data:
-    internal: false # dev only: lets the host reach MySQL on 3308
+    internal: false
+  graph:
+    internal: false
+  broker:
+    internal: false

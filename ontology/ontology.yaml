@@ -1,0 +1,116 @@
+# Ontology v1 for the multi-tenant configuration domain.
+#
+# The single source of truth for the knowledge graph's shape. Used by:
+#   - app/graph/projection.py  (Neo4j constraints)
+#   - app/graph/validate.py    (CI/ops check: the graph conforms to this file)
+#   - app/graph/rules.py       (can_apply rule order and wording)
+#   - graph tools              (setting-key aliases for entity resolution)
+#
+# tenant_scoped classes carry a tenant_id property; graph queries never let a path
+# cross from one tenant's nodes into another's. Shared classes are global reference data.
+
+version: 1
+
+classes:
+  Tenant:
+    key: id
+    tenant_scoped: true
+    required: [id, tenant_id, name, status]
+    description: A customer organisation. tenant_id equals id.
+  User:
+    key: uid # "<tenant_id>:<email>"
+    tenant_scoped: true
+    required: [uid, tenant_id, email]
+    description: A member of one tenant.
+  Page:
+    key: uid # "<tenant_id>:<name>"
+    tenant_scoped: true
+    required: [uid, tenant_id, name]
+    description: A tenant's configurable page.
+  Setting:
+    key: uid # "<tenant_id>:<page|*>:<key>" for overrides, "tpl:<template>:<key>" for template values
+    tenant_scoped: optional # template settings are shared; overrides are tenant-scoped
+    required: [uid, key, value_json, scope]
+    description: A value for one setting key at one level (page, tenant or template).
+  ChangeEvent:
+    key: uid # "audit:<audit_log.id>"
+    tenant_scoped: true
+    required: [uid, tenant_id, action, actor]
+    description: A recorded change (recent history only).
+  Role:
+    key: name
+    required: [name, rank]
+    description: viewer < editor < admin.
+  Action:
+    key: name
+    required: [name]
+    description: An operation (tool) a role may perform.
+  Plan:
+    key: name
+    required: [name]
+    description: A subscription plan.
+  Feature:
+    key: key
+    required: [key]
+    description: A capability a plan may include.
+  SettingKey:
+    key: name
+    required: [name, value_type, default_json]
+    description: Definition of a setting (type, allowed values, default, aliases).
+  Template:
+    key: name
+    required: [name]
+    description: A base configuration tenants inherit from.
+  # Declared for Phase 6 (GraphRAG); no instances yet.
+  DocChunk:
+    key: uid
+    required: [uid, text]
+    description: A chunk of product documentation.
+  Concept:
+    key: name
+    required: [name]
+    description: A domain concept documentation can mention.
+
+# out / in: allowed number of edges of this type per source / target node:
+# "1" exactly one, "0..1" at most one, "*" any number, "1..*" at least one.
+relationships:
+  - {type: MEMBER_OF, from: User, to: Tenant, out: "1", in: "*"}
+  - {type: HAS_ROLE, from: User, to: Role, out: "1", in: "*"}
+  - {type: MAY, from: Role, to: Action, out: "*", in: "*"}
+  - {type: SUBSCRIBES_TO, from: Tenant, to: Plan, out: "1", in: "*"}
+  - {type: INCLUDES, from: Plan, to: Feature, out: "*", in: "*"}
+  - {type: REQUIRES, from: SettingKey, to: Feature, out: "0..1", in: "*"}
+  - {type: INHERITS_FROM, from: Tenant, to: Template, out: "0..1", in: "*"}
+  - {type: DEFINES, from: Template, to: Setting, out: "*", in: "0..1"}
+  - {type: OWNS, from: Tenant, to: Page, out: "*", in: "1"}
+  - {type: HAS_SETTING, from: Page, to: Setting, out: "*", in: "0..1"}
+  - {type: HAS_SETTING, from: Tenant, to: Setting, out: "*", in: "0..1"}
+  - {type: OF_KEY, from: Setting, to: SettingKey, out: "1", in: "*"}
+  - {type: CHANGED, from: ChangeEvent, to: Page, out: "0..1", in: "*"}
+  - {type: CHANGED, from: ChangeEvent, to: Tenant, out: "0..1", in: "*"}
+  - {type: MENTIONS, from: DocChunk, to: Concept, out: "*", in: "*"}
+  - {type: ABOUT, from: Concept, to: SettingKey, out: "*", in: "*"}
+
+# Evaluated in this order by can_apply; the first failing rule is the reason for a denial.
+rules:
+  - id: tenant_active
+    description: Changes are only allowed while the tenant is active.
+  - id: permission
+    description: The user's role must be allowed to perform the action (Role -MAY-> Action).
+  - id: known_setting
+    description: The setting must be defined (SettingKey).
+  - id: allowed_value
+    description: The value must match the setting's type, allowed values or pattern.
+  - id: entitlement
+    description: A setting that REQUIRES a feature needs a plan that INCLUDES it (Tenant -SUBSCRIBES_TO-> Plan).
+
+# Effective value of a setting, most specific first.
+inheritance: [page, tenant, template, default]
+
+# Words people use for each setting key (entity resolution).
+aliases:
+  theme: [dark mode, light mode, mode, colour scheme, color scheme, appearance]
+  language: [locale, lang, translation]
+  layout: [density, spacing, compact mode]
+  brand_color: [brand colour, brand color, accent, accent colour, accent color, primary colour, primary color]
+  show_tips: [tips, hints, onboarding, help tips]
