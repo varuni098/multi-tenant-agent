@@ -1,7 +1,8 @@
 # multi-tenant-agent
 
-LangGraph + Pydantic AI agent that reads/toggles per-tenant page themes in MySQL,
-running fully locally on an Ollama-served LLM (default `qwen3:8b`).
+LangGraph + Pydantic AI agent that reads and changes per-tenant page settings in MySQL,
+running fully locally on an Ollama-served LLM (default `qwen3:8b`), behind an
+authenticated, tenant-pinned harness.
 
 ## Layout
 
@@ -10,11 +11,13 @@ app/
   core/       config (pydantic-settings), logging
   db/         SQLAlchemy models, session, seed
   services/   settings (resolution, validation, history, undo), admin, tenants
+  harness/    auth (JWT), RBAC policy, guardrails, intent, confirmations,
+              rate limits, session memory, model reliability, state store
   agent/      Pydantic AI agent + tools, model warm-up
-  workflow/   LangGraph tenant workflow
-  api/        FastAPI app (/chat, /health, /ready)
+  workflow/   LangGraph request flow
+  api/        FastAPI app (/v1/chat, /v1/chat/confirm, /health, /ready)
 migrations/   Alembic
-tests/        pytest (SQLite + TestModel, no GPU/MySQL needed)
+tests/        pytest (SQLite + scripted FunctionModel, no GPU/MySQL/Redis needed)
 run_workflow.py   interactive CLI
 ```
 
@@ -40,13 +43,47 @@ Effective value of a setting: **page override → tenant default → template �
 
 ## Agent tools
 
-`list_pages`, `search_pages` (fuzzy), `get_theme`, `set_theme` (exact value, safe to
-repeat; toggling = read then set), `get_settings_for_page`, `set_setting`,
-`get_change_history`, `undo_last_change`. Tools return structured data. A wrong page,
-key or value makes the model retry, with the valid options in the error.
+No tool takes a tenant argument. The tenant and user come from the verified token,
+through `RunContext.deps`. Tools return structured data. A wrong page, key or value
+makes the model retry, with the valid options in the error.
 
-Admin operations (`create_page`, `delete_page`, `bulk_set_setting`, `apply_template` in
-`app/services/admin.py`) are not exposed to the agent until roles and confirmation exist.
+| Tool | Role | Notes |
+|---|---|---|
+| `list_pages`, `search_pages`, `get_theme`, `get_settings_for_page` | viewer | |
+| `get_change_history` | editor | |
+| `set_theme`, `set_setting`, `undo_last_change` | editor | `set_theme` sets an exact value (toggle = read then set) |
+| `create_page` | admin | |
+| `delete_page`, `bulk_set_setting`, `apply_template` | admin | **confirmation required** |
+
+## Harness
+
+Request flow (`app/workflow/graph.py`):
+
+```
+JWT -> rate limit -> check_tenant -> guard_input -> classify -> run_agent | off_topic
+```
+
+- **Identity:** a JWT with `sub` (email), `tenant_id` and `role`, signed HS256 with
+  `JWT_SECRET` or RS256 via `JWT_JWKS_URL` (OIDC). The user must exist in that tenant,
+  and the effective role is the lower of the token role and the database role.
+- **Tenant pinning:** tools read the tenant from `deps`, never from model arguments. A
+  prompt that names another tenant's UUID is refused before it reaches the model.
+- **Role-based access:** the model is only offered the tools the role allows. Read-only
+  requests (by keyword intent) lose every write tool, even for admins. Every call is
+  re-checked inside the tool as well.
+- **Input guardrails:** empty or overlong prompts and prompt-injection patterns are refused;
+  off-topic prompts get a help reply without calling the model. Logs redact emails,
+  tokens and long numbers.
+- **Write gate:** destructive and bulk actions are validated and summarised, then stored
+  under a single-use token (5 minutes) bound to the tenant and user. `POST
+  /v1/chat/confirm` runs the stored call directly, with no model involved.
+- **Output check:** an answer that claims a change when none happened is retried once,
+  then replaced with a safe reply. `actions[]` in the response is the ground truth.
+- **Reliability:** per-call timeout, request and tool-call limits per run, a circuit
+  breaker per model, and an optional `OLLAMA_FALLBACK_MODEL`.
+- **Sessions:** history per tenant, user and `session_id` (last 10 turns, 1 h).
+  Redis-backed in compose, in-memory otherwise.
+- **Rate limits:** per user and per tenant per minute (HTTP 429).
 
 ## Stack (docker compose)
 
@@ -56,6 +93,7 @@ Admin operations (`create_page`, `delete_page`, `bulk_set_setting`, `apply_templ
 | `ollama`      | Local LLM server (GPU)                       | 11435         |
 | `ollama-pull` | One-shot: pulls `$OLLAMA_MODEL`              | –             |
 | `mysql`       | MySQL 8                                      | 3308          |
+| `redis`       | Sessions, rate limits, confirmations         | –             |
 | `migrate`     | One-shot: `alembic upgrade head` (+ seed in dev) | –         |
 
 On startup the app loads the model onto the GPU in the background, so the first
@@ -86,15 +124,31 @@ docker compose -f compose.yml -f compose.prod.yml up -d --build
 ```
 
 No reload, 2 uvicorn workers, restart policies and resource limits; only port
-8000 is published.
+8000 is published. `APP_ENV=prod` requires a real `JWT_SECRET` (or `JWT_JWKS_URL`)
+and disables local token issuing.
 
 ## Use it
 
+Get a dev token for a seeded user (`admin@acme.test`, `editor@acme.test`,
+`viewer@acme.test`, `admin@globex.test`):
+
 ```bash
-curl -X POST http://localhost:8000/chat -H "Content-Type: application/json" -d "{\"prompt\": \"What theme is the login page for tenant a1b2c3d4-e5f6-7890-abcd-ef0123456789?\"}"
+TOKEN=$(docker compose exec -T app python -m app.harness.dev_token editor@acme.test)
 ```
 
-Interactive docs: http://localhost:8000/docs · CLI: `docker compose exec app python run_workflow.py`
+```bash
+curl -X POST http://localhost:8000/v1/chat -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d "{\"prompt\": \"Toggle the login page\", \"session_id\": \"demo\"}"
+```
+
+The response has `answer`, `actions[]`, `requires_confirmation` and `confirmation.token`.
+To approve a gated action:
+
+```bash
+curl -X POST http://localhost:8000/v1/chat/confirm -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d "{\"token\": \"<token>\"}"
+```
+
+Interactive docs: http://localhost:8000/docs · CLI (asks before gated actions):
+`docker compose exec app python run_workflow.py --email admin@acme.test`
 
 ## Database migrations
 
@@ -117,7 +171,8 @@ docker run --rm -v "$PWD:/src" -w /src python:3.12-slim sh -c "pip install -q uv
 ## Configuration
 
 See `.env.example`. Key settings: `OLLAMA_MODEL` (default `qwen3:8b`; alternatives
-`llama3.1:8b`, `qwen3:14b` with more VRAM), `DOCKER_DB_PASSWORD`, `LOG_LEVEL`.
+`llama3.1:8b`, `qwen3:14b` with more VRAM), `OLLAMA_FALLBACK_MODEL`, `JWT_SECRET` /
+`JWT_JWKS_URL`, `REDIS_URL`, `RATE_LIMIT_*`, `DOCKER_DB_PASSWORD`, `LOG_LEVEL`.
 
 ## GPU
 

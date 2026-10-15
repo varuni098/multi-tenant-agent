@@ -1,48 +1,117 @@
 import threading
-from collections.abc import AsyncIterator
+import uuid
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from typing import Annotated, Any
 
-from fastapi import FastAPI, Response, status
-from pydantic import BaseModel
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import BaseModel, Field
 
 from app.agent.warmup import ollama_ready, warm_up_model
 from app.core.config import get_settings
 from app.core.logging import setup_logging
 from app.db.session import ping
+from app.harness.auth import AuthError, authenticate
+from app.harness.confirmations import ConfirmationError, confirm
+from app.harness.context import Identity
+from app.harness.ratelimit import RateLimited, check_rate_limit
+from app.services.errors import DomainError
 from app.workflow.graph import run_workflow
-from app.workflow.utils import extract_uuid
 
 setup_logging()
+settings = get_settings()
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    if get_settings().warmup_on_startup:
+    if settings.warmup_on_startup:
         # Background thread: the API accepts requests while the model loads
         threading.Thread(target=warm_up_model, daemon=True).start()
     yield
 
 
-app = FastAPI(title="Multi-Tenant Agent", lifespan=lifespan)
+app = FastAPI(title="Multi-Tenant Agent", version="0.3.0", lifespan=lifespan)
+bearer = HTTPBearer(auto_error=False)
+
+
+@app.middleware("http")
+async def request_id_middleware(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
+    request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex
+    request.state.request_id = request_id[:64]
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request.state.request_id
+    return response
+
+
+def current_identity(creds: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)]) -> Identity:
+    if creds is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing bearer token", {"WWW-Authenticate": "Bearer"})
+    try:
+        return authenticate(creds.credentials)
+    except AuthError as e:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, str(e), {"WWW-Authenticate": "Bearer"}) from e
+
+
+def rate_limited_identity(identity: Annotated[Identity, Depends(current_identity)]) -> Identity:
+    try:
+        check_rate_limit(identity)
+    except RateLimited as e:
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, str(e), {"Retry-After": "60"}) from e
+    return identity
+
+
+# --- Schemas ---
 
 
 class ChatRequest(BaseModel):
-    prompt: str
+    prompt: str = Field(min_length=1, max_length=settings.max_prompt_chars)
+    session_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,64}$")
+
+
+class ActionOut(BaseModel):
+    tool: str
+    message: str
+
+
+class ConfirmationOut(BaseModel):
+    token: str
+    summary: str
+    expires_in: int
 
 
 class ChatResponse(BaseModel):
-    tenant_uuid: str
-    agent_response: str
+    answer: str
+    intent: str | None
+    blocked: bool
+    actions: list[ActionOut]
+    requires_confirmation: bool
+    confirmation: ConfirmationOut | None
+    model: str | None
+    session_id: str
+    request_id: str
+
+
+class ConfirmRequest(BaseModel):
+    token: str = Field(min_length=8, max_length=64)
+
+
+class ConfirmResponse(BaseModel):
+    message: str
+    request_id: str
+
+
+# --- Routes ---
 
 
 @app.get("/health")
-def health():
+def health() -> dict[str, Any]:
     """Liveness: the process is up."""
-    return {"status": "ok", "model": get_settings().ollama_model}
+    return {"status": "ok", "model": settings.ollama_model}
 
 
 @app.get("/ready")
-def ready(response: Response):
+def ready(response: Response) -> dict[str, bool]:
     """Readiness: dependencies are reachable."""
     checks = {"ollama": ollama_ready()}
     try:
@@ -55,8 +124,35 @@ def ready(response: Response):
     return checks
 
 
-# Sync handler: FastAPI runs it in a worker thread, so agent.run_sync() is safe here
-@app.post("/chat", response_model=ChatResponse)
-def chat(req: ChatRequest):
-    final_state = run_workflow(req.prompt, extract_uuid(req.prompt))
-    return ChatResponse(tenant_uuid=final_state["tenant_uuid"], agent_response=final_state["agent_response"])
+# Sync handlers: FastAPI runs them in worker threads, so agent.run_sync() is safe
+@app.post("/v1/chat", response_model=ChatResponse)
+def chat(
+    req: ChatRequest, request: Request, identity: Annotated[Identity, Depends(rate_limited_identity)]
+) -> ChatResponse:
+    request_id = request.state.request_id
+    session_id = req.session_id or uuid.uuid4().hex
+    result = run_workflow(req.prompt, identity, request_id, session_id)
+    return ChatResponse(
+        answer=result.answer,
+        intent=result.intent,
+        blocked=result.blocked,
+        actions=[ActionOut(tool=a.tool, message=a.message) for a in result.actions],
+        requires_confirmation=result.confirmation is not None,
+        confirmation=ConfirmationOut(**vars(result.confirmation)) if result.confirmation else None,
+        model=result.model,
+        session_id=session_id,
+        request_id=request_id,
+    )
+
+
+@app.post("/v1/chat/confirm", response_model=ConfirmResponse)
+def confirm_action(
+    req: ConfirmRequest, request: Request, identity: Annotated[Identity, Depends(rate_limited_identity)]
+) -> ConfirmResponse:
+    try:
+        action = confirm(identity, req.token, request.state.request_id)
+    except ConfirmationError as e:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
+    except DomainError as e:  # e.g. the page was deleted meanwhile
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
+    return ConfirmResponse(message=action.message, request_id=request.state.request_id)

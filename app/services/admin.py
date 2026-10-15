@@ -1,4 +1,4 @@
-"""Admin operations. Not exposed to the agent until Phase 3 adds roles and confirmation."""
+"""Admin operations. Destructive and bulk ones go through the harness confirmation gate."""
 
 from typing import Any
 
@@ -126,3 +126,49 @@ def apply_template(tenant_id: str, template_name: str, *, actor: str = "system",
             request_id=request_id,
         )
         return template.name
+
+
+# --- Previews: validate and describe a gated action without changing anything ---
+
+
+def preview_delete_page(tenant_id: str, name: str) -> tuple[str, str]:
+    """Returns (canonical page name, summary)."""
+    with session_scope() as session:
+        tenant = get_tenant(session, tenant_id)
+        page = get_page(session, tenant, name)
+        overrides = len(list(session.scalars(select(Setting.id).where(Setting.page_id == page.id))))
+        return page.name, f"Delete page '{page.name}' and its {overrides} setting override(s)."
+
+
+def preview_bulk_set_setting(
+    tenant_id: str, page_names_: list[str], key: str, value: Any
+) -> tuple[list[str], Any, str]:
+    """Returns (canonical page names, normalised value, summary)."""
+    with session_scope() as session:
+        tenant = get_tenant(session, tenant_id)
+        key_def = get_key(session, key)
+        new_value = coerce_value(key_def, value)
+        check_entitled(session, tenant, key_def)
+        missing, pages = [], []
+        for name in page_names_:
+            try:
+                pages.append(get_page(session, tenant, name))
+            except PageNotFound:
+                missing.append(name)
+        if missing:
+            raise PageNotFound(", ".join(missing), page_names(session, tenant.id))
+        changing = [p.name for p in pages if resolve_all(session, tenant, p)[key_def.name].value != new_value]
+        summary = (
+            f"Set {key_def.name}={new_value!r} on {len(pages)} page(s) ({', '.join(p.name for p in pages)}); "
+            f"{len(changing)} will change."
+        )
+        return [p.name for p in pages], new_value, summary
+
+
+def preview_apply_template(tenant_id: str, template_name: str) -> tuple[str, str]:
+    """Returns (canonical template name, summary)."""
+    with session_scope() as session:
+        tenant = get_tenant(session, tenant_id)
+        template = get_template(session, template_name)
+        current = tenant.template.name if tenant.template else "none"
+        return template.name, f"Switch the tenant template from '{current}' to '{template.name}'."

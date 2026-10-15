@@ -1,7 +1,11 @@
 from functools import lru_cache
+from typing import Literal
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import URL
+
+DEV_JWT_SECRET = "dev-insecure-secret-change-me-0123456789"
 
 
 class Settings(BaseSettings):
@@ -24,10 +28,39 @@ class Settings(BaseSettings):
     ollama_keep_alive: str = "30m"
     warmup_on_startup: bool = True
 
-    # Used when a prompt contains no tenant UUID (temporary until auth lands)
-    default_tenant_uuid: str = "a1b2c3d4-e5f6-7890-abcd-ef0123456789"
+    ollama_fallback_model: str = ""  # e.g. llama3.1:8b; empty = no fallback
+    llm_timeout_seconds: float = 120
+    max_requests_per_run: int = 8
+    max_tool_calls_per_run: int = 10
+    breaker_failure_threshold: int = 3
+    breaker_cooldown_seconds: int = 60
 
+    app_env: Literal["dev", "prod"] = "dev"
     log_level: str = "INFO"
+
+    # Auth: HS256 shared secret (dev/simple setups) or an OIDC provider's JWKS (RS256)
+    jwt_secret: str = DEV_JWT_SECRET
+    jwt_jwks_url: str | None = None
+    jwt_issuer: str = "multi-tenant-agent"
+    jwt_audience: str = "multi-tenant-agent"
+    jwt_ttl_minutes: int = 60
+
+    # State store (sessions, rate limits, confirmations); in-memory when unset
+    redis_url: str | None = None
+
+    # Harness limits
+    max_prompt_chars: int = 2000
+    rate_limit_user_per_minute: int = 20
+    rate_limit_tenant_per_minute: int = 100
+    session_ttl_seconds: int = 3600
+    session_max_turns: int = 10
+    confirmation_ttl_seconds: int = 300
+
+    @model_validator(mode="after")
+    def _check_prod_secrets(self) -> "Settings":
+        if self.app_env == "prod" and not self.jwt_jwks_url and self.jwt_secret == DEV_JWT_SECRET:
+            raise ValueError("APP_ENV=prod requires JWT_SECRET (or JWT_JWKS_URL) to be set")
+        return self
 
     @property
     def sqlalchemy_url(self) -> str | URL:

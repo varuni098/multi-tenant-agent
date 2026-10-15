@@ -1,79 +1,143 @@
+"""LangGraph request flow:
+
+check_tenant -> guard_input -> classify -> run_agent | off_topic
+            \-> blocked (any failed check)
+"""
+
 import logging
+from dataclasses import dataclass, field
 from typing import TypedDict
 
 from langgraph.graph import END, StateGraph
-from pydantic_ai.exceptions import UnexpectedModelBehavior
+from pydantic_ai.exceptions import UnexpectedModelBehavior, UsageLimitExceeded
 
-from app.agent.agent import agent
+from app.harness import memory
+from app.harness.context import Action, Identity, PendingConfirmation, RunDeps
+from app.harness.guardrails import check_input, redact
+from app.harness.intent import OFF_TOPIC_REPLY, classify
+from app.harness.policy import Intent, allowed_tools
+from app.harness.reliability import ModelUnavailable, run_agent
+from app.services.settings import list_pages
 from app.services.tenants import is_tenant_active
 
 log = logging.getLogger(__name__)
 
+SAFE_FAILURE_REPLY = "I wasn't able to complete that reliably, so nothing was changed. Please rephrase."
 
-# 1. Shared state passed across workflow steps
-class TenantWorkflowState(TypedDict):
+
+@dataclass
+class ChatResult:
+    answer: str
+    intent: Intent | None = None
+    blocked: bool = False
+    actions: list[Action] = field(default_factory=list)
+    confirmation: PendingConfirmation | None = None
+    model: str | None = None
+
+
+class State(TypedDict):
     prompt: str
-    tenant_uuid: str
-    is_valid: bool
-    agent_response: str
+    identity: Identity
+    request_id: str
+    session_id: str
+    intent: Intent | None
+    result: ChatResult | None
 
 
-# 2. Graph nodes
-def check_tenant_node(state: TenantWorkflowState):
-    """Step 1: Verify the tenant exists and is active."""
-    log.info("Step 1: validating tenant UUID %s", state["tenant_uuid"])
-    state["is_valid"] = is_tenant_active(state["tenant_uuid"])
-    log.info("Tenant %s", "verified" if state["is_valid"] else "NOT found")
+def check_tenant_node(state: State) -> State:
+    if not is_tenant_active(state["identity"].tenant_id):
+        log.info("[%s] blocked: tenant inactive", state["request_id"])
+        state["result"] = ChatResult(answer="Operation blocked: Invalid or inactive tenant.", blocked=True)
     return state
 
 
-def run_agent_node(state: TenantWorkflowState):
-    """Step 2: Run the Pydantic AI agent once validation passes."""
-    log.info("Step 2: handing over to agent")
+def guard_input_node(state: State) -> State:
+    refusal = check_input(state["prompt"], state["identity"])
+    if refusal:
+        log.warning("[%s] blocked by guardrail: %s", state["request_id"], redact(state["prompt"])[:200])
+        state["result"] = ChatResult(answer=refusal, blocked=True)
+    return state
+
+
+def classify_node(state: State) -> State:
+    pages = [p.name for p in list_pages(state["identity"].tenant_id)]
+    state["intent"] = classify(state["prompt"], pages)
+    log.info("[%s] intent=%s", state["request_id"], state["intent"])
+    return state
+
+
+def off_topic_node(state: State) -> State:
+    state["result"] = ChatResult(answer=OFF_TOPIC_REPLY, intent="off_topic")
+    return state
+
+
+def run_agent_node(state: State) -> State:
+    identity, intent = state["identity"], state["intent"] or "write"
+    deps = RunDeps(
+        identity=identity,
+        request_id=state["request_id"],
+        allowed_tools=allowed_tools(identity.role, intent),
+    )
+    history = memory.load_history(identity, state["session_id"])
     try:
-        result = agent.run_sync(state["prompt"])
-        state["agent_response"] = result.output
-    except UnexpectedModelBehavior as e:
-        # e.g. the model kept calling a tool with invalid arguments past the retry limit
-        log.warning("Agent gave up: %s", e)
-        state["agent_response"] = "Sorry, I couldn't complete that request. Please rephrase or name the page exactly."
+        run, model = run_agent(state["prompt"], deps, history)
+        answer = run.output
+        memory.append_turn(identity, state["session_id"], run.new_messages_json())
+    except (UnexpectedModelBehavior, UsageLimitExceeded) as e:
+        log.warning("[%s] agent gave up: %s", state["request_id"], e)
+        answer, model = SAFE_FAILURE_REPLY, None
+    except ModelUnavailable as e:
+        answer, model = str(e), None
+
+    confirmation = deps.confirmations[-1] if deps.confirmations else None
+    if confirmation:
+        # Deterministic wording: the model must not paraphrase a pending action as done
+        answer = f"Please confirm: {confirmation.summary}"
+    elif deps.verification_failed and not deps.actions:
+        answer = SAFE_FAILURE_REPLY
+    state["result"] = ChatResult(
+        answer=answer, intent=intent, actions=deps.actions, confirmation=confirmation, model=model
+    )
     return state
 
 
-def denied_node(state: TenantWorkflowState):
-    """Alternative step: block execution for an invalid tenant."""
-    log.info("Execution blocked by security policy")
-    state["agent_response"] = "Operation blocked: Invalid or inactive tenant UUID."
-    return state
+def _after(next_node: str):
+    def route(state: State) -> str:
+        return "end" if state["result"] is not None else next_node
+
+    return route
 
 
-# 3. Conditional routing
-def route_after_check(state: TenantWorkflowState):
-    return "run_agent" if state["is_valid"] else "block_execution"
-
-
-# 4. Build and compile the graph
-workflow = StateGraph(TenantWorkflowState)
-workflow.add_node("check_tenant", check_tenant_node)
-workflow.add_node("run_agent", run_agent_node)
-workflow.add_node("denied", denied_node)
-workflow.set_entry_point("check_tenant")
-workflow.add_conditional_edges(
-    "check_tenant",
-    route_after_check,
-    {"run_agent": "run_agent", "block_execution": "denied"},
+graph = StateGraph(State)
+graph.add_node("check_tenant", check_tenant_node)
+graph.add_node("guard_input", guard_input_node)
+graph.add_node("classify", classify_node)
+graph.add_node("run_agent", run_agent_node)
+graph.add_node("off_topic", off_topic_node)
+graph.set_entry_point("check_tenant")
+graph.add_conditional_edges("check_tenant", _after("guard_input"), {"guard_input": "guard_input", "end": END})
+graph.add_conditional_edges("guard_input", _after("classify"), {"classify": "classify", "end": END})
+graph.add_conditional_edges(
+    "classify",
+    lambda s: "off_topic" if s["intent"] == "off_topic" else "run_agent",
+    {"off_topic": "off_topic", "run_agent": "run_agent"},
 )
-workflow.add_edge("run_agent", END)
-workflow.add_edge("denied", END)
+graph.add_edge("run_agent", END)
+graph.add_edge("off_topic", END)
 
-app_graph = workflow.compile()
+app_graph = graph.compile()
 
 
-def run_workflow(prompt: str, tenant_uuid: str) -> TenantWorkflowState:
-    initial_state: TenantWorkflowState = {
+def run_workflow(prompt: str, identity: Identity, request_id: str, session_id: str) -> ChatResult:
+    state: State = {
         "prompt": prompt,
-        "tenant_uuid": tenant_uuid,
-        "is_valid": False,
-        "agent_response": "",
+        "identity": identity,
+        "request_id": request_id,
+        "session_id": session_id,
+        "intent": None,
+        "result": None,
     }
-    return app_graph.invoke(initial_state)  # type: ignore[return-value]
+    final = app_graph.invoke(state)
+    result = final["result"]
+    assert result is not None
+    return result

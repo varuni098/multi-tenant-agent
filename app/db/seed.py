@@ -58,7 +58,7 @@ DEMO_TENANTS: list[dict[str, Any]] = [
         "plan": "free",
         "template": "standard",
         "pages": {"login": {"theme": "light"}, "dashboard": {"theme": "dark"}, "settings": {}},
-        "users": {"admin@acme.test": "admin", "editor@acme.test": "editor"},
+        "users": {"admin@acme.test": "admin", "editor@acme.test": "editor", "viewer@acme.test": "viewer"},
     },
     {
         "id": TENANT_B,

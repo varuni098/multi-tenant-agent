@@ -1,5 +1,5 @@
 # Production overrides: docker compose -f compose.yml -f compose.prod.yml up -d --build
-# No dev ports, no reload, restart on failure, resource limits.
+# No dev ports, no reload, restart on failure, resource limits, real secrets required.
 services:
   ollama:
     restart: unless-stopped
@@ -11,8 +11,14 @@ services:
         limits:
           memory: 2g
 
+  redis:
+    restart: unless-stopped
+
   app:
     restart: unless-stopped
+    environment:
+      APP_ENV: prod
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET (or JWT_JWKS_URL) for production}
     deploy:
       resources:
         limits:
