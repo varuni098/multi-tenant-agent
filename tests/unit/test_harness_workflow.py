@@ -2,15 +2,15 @@ from pydantic_ai.exceptions import ModelAPIError
 
 from app.db.models import Tenant
 from app.db.session import session_scope
-from app.harness.confirmations import confirm
 from app.harness.intent import OFF_TOPIC_REPLY
+from app.harness.tenant_client import confirm
 from app.services import settings as svc
 from app.workflow.graph import SAFE_FAILURE_REPLY, run_workflow
-from tests.conftest import ADMIN_A, EDITOR_A, TENANT_A
+from tests.conftest import ADMIN_A, EDITOR_A, TENANT_A, caller_for
 
 
 def _run(prompt, identity=EDITOR_A, session="s"):
-    return run_workflow(prompt, identity, "req-test", session)
+    return run_workflow(prompt, caller_for(identity), "req-test", session)
 
 
 def test_off_topic_skips_the_model(script):
@@ -66,8 +66,8 @@ def test_destructive_admin_action_waits_for_confirmation(script):
     assert result.actions == []
     assert "login" in {p.name for p in svc.list_pages(TENANT_A)}
 
-    action = confirm(ADMIN_A, result.confirmation.token, "req-confirm")
-    assert action.message == "Deleted page 'login'."
+    message = confirm(ADMIN_A, result.confirmation.token, "req-confirm")
+    assert message == "Deleted page 'login'."
     assert "login" not in {p.name for p in svc.list_pages(TENANT_A)}
 
 

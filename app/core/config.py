@@ -6,6 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import URL
 
 DEV_JWT_SECRET = "dev-insecure-secret-change-me-0123456789"
+DEV_MCP_CONTEXT_SECRET = "dev-insecure-mcp-context-secret-0123456789"
 
 
 class Settings(BaseSettings):
@@ -56,11 +57,24 @@ class Settings(BaseSettings):
     session_max_turns: int = 10
     confirmation_ttl_seconds: int = 300
 
+    # tenant-mcp: the only service with database access. The agent app signs a short-lived
+    # context token (tenant, user, role, purpose) with this shared secret on every call.
+    tenant_mcp_url: str = "http://localhost:8001/mcp"
+    mcp_context_secret: str = DEV_MCP_CONTEXT_SECRET
+    mcp_context_ttl_seconds: int = 600
+
     @model_validator(mode="after")
     def _check_prod_secrets(self) -> "Settings":
         if self.app_env == "prod" and not self.jwt_jwks_url and self.jwt_secret == DEV_JWT_SECRET:
             raise ValueError("APP_ENV=prod requires JWT_SECRET (or JWT_JWKS_URL) to be set")
+        if self.app_env == "prod" and self.mcp_context_secret == DEV_MCP_CONTEXT_SECRET:
+            raise ValueError("APP_ENV=prod requires MCP_CONTEXT_SECRET to be set")
         return self
+
+    @property
+    def tenant_mcp_base_url(self) -> str:
+        """Server root for the internal (non-MCP) routes."""
+        return self.tenant_mcp_url.removesuffix("/").removesuffix("/mcp")
 
     @property
     def sqlalchemy_url(self) -> str | URL:

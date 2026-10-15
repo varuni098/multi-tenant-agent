@@ -1,4 +1,31 @@
 # Development overrides, loaded automatically by `docker compose`.
+x-dev-build: &dev-build
+  build:
+    args:
+      INSTALL_DEV: "true"
+
+# `--watch`: code edits sync into the containers and uvicorn reloads;
+# dependency or Dockerfile changes trigger a rebuild.
+x-dev-watch: &dev-watch
+  watch:
+    - action: sync
+      path: .
+      target: /app
+      ignore:
+        - .git/
+        - .env
+        - .venv/
+        - __pycache__/
+        - .pytest_cache/
+        - .mypy_cache/
+        - .ruff_cache/
+    - action: rebuild
+      path: requirements.txt
+    - action: rebuild
+      path: requirements-dev.txt
+    - action: rebuild
+      path: Dockerfile
+
 services:
   ollama:
     ports:
@@ -9,35 +36,22 @@ services:
       - "3308:3306"     # 3306/3307 are already taken on the host
 
   migrate:
-    build:
-      args:
-        INSTALL_DEV: "true"
+    <<: *dev-build
     # Dev also loads idempotent demo data
     command: ["sh", "-c", "alembic upgrade head && python -m app.db.seed"]
 
+  tenant-mcp:
+    <<: *dev-build
+    ports:
+      - "8001:8001"     # for external MCP clients (Claude Code/Desktop, IDEs) in dev
+    command: ["uvicorn", "app.mcp_server.server:app", "--host", "0.0.0.0", "--port", "8001", "--reload"]
+    develop: *dev-watch
+
   app:
-    build:
-      args:
-        INSTALL_DEV: "true"
+    <<: *dev-build
     command: ["uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
-    # `--watch`: code edits sync into the container and uvicorn reloads;
-    # dependency or Dockerfile changes trigger a rebuild.
-    develop:
-      watch:
-        - action: sync
-          path: .
-          target: /app
-          ignore:
-            - .git/
-            - .env
-            - .venv/
-            - __pycache__/
-            - .pytest_cache/
-            - .mypy_cache/
-            - .ruff_cache/
-        - action: rebuild
-          path: requirements.txt
-        - action: rebuild
-          path: requirements-dev.txt
-        - action: rebuild
-          path: Dockerfile
+    develop: *dev-watch
+
+networks:
+  data:
+    internal: false # dev only: lets the host reach MySQL on 3308

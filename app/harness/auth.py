@@ -1,4 +1,4 @@
-"""JWT authentication. Tokens carry sub (email), tenant_id and role; membership is re-checked in the DB."""
+"""JWT authentication. Tokens carry sub (email), tenant_id and role; membership is checked by tenant-mcp."""
 
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
@@ -7,8 +7,7 @@ from typing import Any, cast
 import jwt
 
 from app.core.config import get_settings
-from app.harness.context import ROLE_RANK, Identity, Role
-from app.services.tenants import get_user_role
+from app.harness.context import ROLE_RANK, Caller, Identity, Role
 
 
 class AuthError(Exception):
@@ -59,14 +58,19 @@ def decode_token(token: str) -> dict[str, Any]:
         raise AuthError(f"Invalid token: {e}") from e
 
 
-def authenticate(token: str) -> Identity:
-    """Verify the token and the user's membership. Effective role = lower of token role and DB role."""
+def authenticate(token: str, request_id: str = "") -> Caller:
+    """Verify the token locally, then ask tenant-mcp about membership.
+
+    The effective role is the lower of the token role and the database role.
+    """
+    from app.harness import tenant_client  # deferred: tenant_client pulls in the MCP client stack
+
     claims = decode_token(token)
     tenant_id, email, token_role = claims.get("tenant_id"), claims["sub"], claims.get("role", "viewer")
     if not isinstance(tenant_id, str) or token_role not in ROLE_RANK:
         raise AuthError("Token is missing tenant_id or has an unknown role")
-    db_role = get_user_role(tenant_id, email)
-    if db_role is None:
+    info = tenant_client.whoami(tenant_id, email, token_role, request_id)
+    if not info["member"]:
         raise AuthError("User is not a member of this tenant")
-    role = min(token_role, db_role, key=ROLE_RANK.__getitem__)
-    return Identity(tenant_id=tenant_id, user_email=email, role=cast(Role, role))
+    identity = Identity(tenant_id=tenant_id, user_email=email, role=cast(Role, info["role"]))
+    return Caller(identity=identity, tenant_active=info["tenant_active"], page_names=tuple(info["page_names"]))

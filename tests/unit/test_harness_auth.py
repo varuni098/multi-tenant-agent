@@ -24,17 +24,19 @@ def _token(**overrides) -> str:
 
 
 def test_valid_token():
-    identity = authenticate(create_token(TENANT_A, "admin@acme.test", "admin"))
+    caller = authenticate(create_token(TENANT_A, "admin@acme.test", "admin"))
+    identity = caller.identity
+    assert caller.tenant_active and "login" in caller.page_names
     assert (identity.tenant_id, identity.user_email, identity.role) == (TENANT_A, "admin@acme.test", "admin")
 
 
 def test_role_is_capped_by_database_role():
     # Token claims admin, but the DB says editor
-    assert authenticate(create_token(TENANT_A, "editor@acme.test", "admin")).role == "editor"
+    assert authenticate(create_token(TENANT_A, "editor@acme.test", "admin")).identity.role == "editor"
 
 
 def test_token_role_can_be_lower_than_database_role():
-    assert authenticate(create_token(TENANT_A, "admin@acme.test", "viewer")).role == "viewer"
+    assert authenticate(create_token(TENANT_A, "admin@acme.test", "viewer")).identity.role == "viewer"
 
 
 def test_user_must_belong_to_token_tenant():
@@ -82,7 +84,11 @@ def test_no_local_tokens_in_prod(settings):
 def test_prod_refuses_default_secret(monkeypatch):
     monkeypatch.setenv("APP_ENV", "prod")
     monkeypatch.delenv("JWT_SECRET", raising=False)
+    monkeypatch.delenv("MCP_CONTEXT_SECRET", raising=False)
     with pytest.raises(ValidationError, match="JWT_SECRET"):
         Settings(_env_file=None)  # type: ignore[call-arg]
     monkeypatch.setenv("JWT_SECRET", "a-real-production-secret-of-good-length")
+    with pytest.raises(ValidationError, match="MCP_CONTEXT_SECRET"):
+        Settings(_env_file=None)  # type: ignore[call-arg]
+    monkeypatch.setenv("MCP_CONTEXT_SECRET", "a-real-service-context-secret-of-length")
     assert Settings(_env_file=None).app_env == "prod"  # type: ignore[call-arg]

@@ -14,6 +14,15 @@ class Identity:
     role: Role
 
 
+@dataclass(frozen=True)
+class Caller:
+    """An authenticated identity plus what tenant-mcp reported about it at login."""
+
+    identity: Identity
+    tenant_active: bool
+    page_names: tuple[str, ...] = ()
+
+
 @dataclass
 class Action:
     """A change that actually happened during a run (ground truth for the response)."""

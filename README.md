@@ -11,8 +11,9 @@ app/
   core/       config (pydantic-settings), logging
   db/         SQLAlchemy models, session, seed
   services/   settings (resolution, validation, history, undo), admin, tenants
-  harness/    auth (JWT), RBAC policy, guardrails, intent, confirmations,
-              rate limits, session memory, model reliability, state store
+  harness/    auth (JWT), RBAC policy, guardrails, intent, rate limits, session
+              memory, model reliability, state store, tenant-mcp client
+  mcp_server/ tenant-mcp: MCP tools, caller auth, confirmations, internal routes
   agent/      Pydantic AI agent + tools, model warm-up
   workflow/   LangGraph request flow
   api/        FastAPI app (/v1/chat, /v1/chat/confirm, /health, /ready)
@@ -41,10 +42,34 @@ Effective value of a setting: **page override → tenant default → template �
 | `brand_color` | `#rrggbb`                      | needs `custom_branding` (pro) |
 | `show_tips`   | true/false                     |                               |
 
+## Architecture
+
+```
+client --JWT--> app (FastAPI + harness + agent) --MCP + signed context--> tenant-mcp --> MySQL
+                     |            \--> Ollama (qwen3:8b)                   ^
+                     \--> Redis (sessions, rate limits)    external MCP clients (user JWT)
+```
+
+- **tenant-mcp** (`app/mcp_server/`) is the only service with database credentials, and
+  the only one on the `data` network with MySQL. It serves the 12 tools over MCP
+  (streamable HTTP) and two internal routes the app uses: `/internal/whoami` and
+  `/internal/confirm`.
+- **The agent app** has no database access. Every call to tenant-mcp carries a signed
+  `X-Tenant-Context` (tenant, user, role, purpose, request ID; HS256 with
+  `MCP_CONTEXT_SECRET`). The server verifies it and re-checks membership, tenant status
+  and role in the database.
+- **Purposes** bind credentials to endpoints. `auth` is for whoami, `agent` for MCP
+  tools, and `confirm` for executing a confirmation. An agent run can never approve its
+  own gated action.
+- **Every MCP call** is logged server-side in `tool_calls` (actor, channel, tool,
+  redacted args, outcome, duration, request ID), including denied and failed calls.
+- **Tool annotations** (`readOnlyHint`, `destructiveHint`, `idempotentHint`) come from the
+  same policy table the harness uses (`app/harness/policy.py`).
+
 ## Agent tools
 
 No tool takes a tenant argument. The tenant and user come from the verified token,
-through `RunContext.deps`. Tools return structured data. A wrong page, key or value
+through the signed service context. Tools return structured data. A wrong page, key or value
 makes the model retry, with the valid options in the error.
 
 | Tool | Role | Notes |
@@ -93,6 +118,7 @@ JWT -> rate limit -> check_tenant -> guard_input -> classify -> run_agent | off_
 | `ollama`      | Local LLM server (GPU)                       | 11435         |
 | `ollama-pull` | One-shot: pulls `$OLLAMA_MODEL`              | –             |
 | `mysql`       | MySQL 8                                      | 3308          |
+| `tenant-mcp`  | MCP tool server; only service with DB access | 8001          |
 | `redis`       | Sessions, rate limits, confirmations         | –             |
 | `migrate`     | One-shot: `alembic upgrade head` (+ seed in dev) | –         |
 
@@ -130,10 +156,10 @@ and disables local token issuing.
 ## Use it
 
 Get a dev token for a seeded user (`admin@acme.test`, `editor@acme.test`,
-`viewer@acme.test`, `admin@globex.test`):
+`viewer@acme.test`, `admin@globex.test`). Tokens are minted where the database is:
 
 ```bash
-TOKEN=$(docker compose exec -T app python -m app.harness.dev_token editor@acme.test)
+TOKEN=$(docker compose exec -T tenant-mcp python -m app.harness.dev_token editor@acme.test)
 ```
 
 ```bash
@@ -148,7 +174,20 @@ curl -X POST http://localhost:8000/v1/chat/confirm -H "Authorization: Bearer $TO
 ```
 
 Interactive docs: http://localhost:8000/docs · CLI (asks before gated actions):
-`docker compose exec app python run_workflow.py --email admin@acme.test`
+`docker compose exec app python run_workflow.py --token "$TOKEN"`
+
+### External MCP clients
+
+tenant-mcp accepts the same user JWTs directly (published on port 8001 in dev). For
+example, with Claude Code:
+
+```bash
+claude mcp add --transport http tenant-tools http://localhost:8001/mcp --header "Authorization: Bearer $TOKEN"
+```
+
+External clients get the same tools, role checks and call logging (channel `external`).
+Gated tools return a confirmation token that the user approves through
+`POST /v1/chat/confirm` with their own JWT.
 
 ## Database migrations
 

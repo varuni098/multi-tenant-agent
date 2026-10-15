@@ -14,11 +14,24 @@ services:
   redis:
     restart: unless-stopped
 
+  tenant-mcp:
+    restart: unless-stopped
+    environment:
+      APP_ENV: prod
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET (or JWT_JWKS_URL) for production}
+      MCP_CONTEXT_SECRET: ${MCP_CONTEXT_SECRET:?Set MCP_CONTEXT_SECRET for production}
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1g
+
   app:
     restart: unless-stopped
     environment:
       APP_ENV: prod
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET (or JWT_JWKS_URL) for production}
+      MCP_CONTEXT_SECRET: ${MCP_CONTEXT_SECRET:?Set MCP_CONTEXT_SECRET for production}
     deploy:
       resources:
         limits:

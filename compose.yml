@@ -1,6 +1,9 @@
 # Base stack, shared by every environment.
 #   dev  (default): docker compose up --build --watch      (auto-loads compose.override.yml)
 #   prod:           docker compose -f compose.yml -f compose.prod.yml up -d --build
+#
+# Networks: only tenant-mcp and the one-shot migrate job can reach MySQL ("data").
+# The agent app has no database credentials and no route to the database.
 name: multi-tenant-agent
 
 x-db-env: &db-env
@@ -10,6 +13,14 @@ x-db-env: &db-env
   DB_PASSWORD: ${DOCKER_DB_PASSWORD:-agentpass}
   DB_NAME: multi_tenant_agent_db
 
+x-auth-env: &auth-env
+  APP_ENV: ${APP_ENV:-dev}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  JWT_SECRET: ${JWT_SECRET:-dev-insecure-secret-change-me-0123456789}
+  JWT_JWKS_URL: ${JWT_JWKS_URL:-}
+  MCP_CONTEXT_SECRET: ${MCP_CONTEXT_SECRET:-dev-insecure-mcp-context-secret-0123456789}
+  REDIS_URL: redis://redis:6379/0
+
 services:
   ollama:
     image: ollama/ollama:latest
@@ -17,6 +28,7 @@ services:
       - ollama_models:/root/.ollama
     environment:
       OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
+    networks: [services]
     deploy:
       resources:
         reservations:
@@ -36,6 +48,7 @@ services:
     environment:
       OLLAMA_HOST: http://ollama:11434
     entrypoint: ["ollama", "pull", "${OLLAMA_MODEL:-qwen3:8b}"]
+    networks: [services]
     depends_on:
       ollama:
         condition: service_healthy
@@ -47,6 +60,7 @@ services:
       MYSQL_DATABASE: multi_tenant_agent_db
     volumes:
       - mysql_data:/var/lib/mysql
+    networks: [data]
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${DOCKER_DB_PASSWORD:-agentpass}"]
       interval: 5s
@@ -57,43 +71,64 @@ services:
   redis:
     image: redis:7.4-alpine
     command: ["redis-server", "--save", "", "--appendonly", "no"]
+    networks: [services]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 10
 
-  # One-shot job: applies Alembic migrations before the app starts
+  # One-shot job: applies Alembic migrations before the services start
   migrate:
     build: .
     environment: *db-env
     command: ["alembic", "upgrade", "head"]
+    networks: [data]
     depends_on:
       mysql:
         condition: service_healthy
+
+  # MCP server: the only service with database access. Serves the agent app (signed
+  # X-Tenant-Context) and external MCP clients (user bearer JWT).
+  tenant-mcp:
+    build: .
+    command: ["uvicorn", "app.mcp_server.server:app", "--host", "0.0.0.0", "--port", "8001", "--workers", "2"]
+    environment:
+      <<: [*db-env, *auth-env]
+    networks: [data, services]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
   app:
     build: .
     ports:
       - "8000:8000"
     environment:
-      <<: *db-env
+      <<: *auth-env
+      TENANT_MCP_URL: http://tenant-mcp:8001/mcp
       OLLAMA_BASE_URL: http://ollama:11434/v1
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:8b}
       OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
       OLLAMA_FALLBACK_MODEL: ${OLLAMA_FALLBACK_MODEL:-}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      APP_ENV: ${APP_ENV:-dev}
-      JWT_SECRET: ${JWT_SECRET:-dev-insecure-secret-change-me-0123456789}
-      JWT_JWKS_URL: ${JWT_JWKS_URL:-}
-      REDIS_URL: redis://redis:6379/0
+    networks: [services]
     depends_on:
-      migrate:
-        condition: service_completed_successfully
-      redis:
+      tenant-mcp:
         condition: service_healthy
       ollama-pull:
         condition: service_completed_successfully
+
+networks:
+  services:
+  data:
+    internal: true # no outbound internet from the database network
 
 volumes:
   ollama_models:

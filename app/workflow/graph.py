@@ -1,4 +1,4 @@
-"""LangGraph request flow:
+r"""LangGraph request flow:
 
 check_tenant -> guard_input -> classify -> run_agent | off_topic
             \-> blocked (any failed check)
@@ -12,17 +12,16 @@ from langgraph.graph import END, StateGraph
 from pydantic_ai.exceptions import UnexpectedModelBehavior, UsageLimitExceeded
 
 from app.harness import memory
-from app.harness.context import Action, Identity, PendingConfirmation, RunDeps
+from app.harness.context import Action, Caller, PendingConfirmation, RunDeps
 from app.harness.guardrails import check_input, redact
 from app.harness.intent import OFF_TOPIC_REPLY, classify
-from app.harness.policy import Intent, allowed_tools
+from app.harness.policy import TOOL_POLICIES, Intent, allowed_tools
 from app.harness.reliability import ModelUnavailable, run_agent
-from app.services.settings import list_pages
-from app.services.tenants import is_tenant_active
 
 log = logging.getLogger(__name__)
 
 SAFE_FAILURE_REPLY = "I wasn't able to complete that reliably, so nothing was changed. Please rephrase."
+NO_PERMISSION_REPLY = "You don't have permission to change settings, so nothing was changed."
 
 
 @dataclass
@@ -37,7 +36,7 @@ class ChatResult:
 
 class State(TypedDict):
     prompt: str
-    identity: Identity
+    caller: Caller
     request_id: str
     session_id: str
     intent: Intent | None
@@ -45,14 +44,14 @@ class State(TypedDict):
 
 
 def check_tenant_node(state: State) -> State:
-    if not is_tenant_active(state["identity"].tenant_id):
+    if not state["caller"].tenant_active:
         log.info("[%s] blocked: tenant inactive", state["request_id"])
         state["result"] = ChatResult(answer="Operation blocked: Invalid or inactive tenant.", blocked=True)
     return state
 
 
 def guard_input_node(state: State) -> State:
-    refusal = check_input(state["prompt"], state["identity"])
+    refusal = check_input(state["prompt"], state["caller"].identity)
     if refusal:
         log.warning("[%s] blocked by guardrail: %s", state["request_id"], redact(state["prompt"])[:200])
         state["result"] = ChatResult(answer=refusal, blocked=True)
@@ -60,8 +59,7 @@ def guard_input_node(state: State) -> State:
 
 
 def classify_node(state: State) -> State:
-    pages = [p.name for p in list_pages(state["identity"].tenant_id)]
-    state["intent"] = classify(state["prompt"], pages)
+    state["intent"] = classify(state["prompt"], list(state["caller"].page_names))
     log.info("[%s] intent=%s", state["request_id"], state["intent"])
     return state
 
@@ -72,29 +70,37 @@ def off_topic_node(state: State) -> State:
 
 
 def run_agent_node(state: State) -> State:
-    identity, intent = state["identity"], state["intent"] or "write"
+    identity, intent = state["caller"].identity, state["intent"] or "write"
     deps = RunDeps(
         identity=identity,
         request_id=state["request_id"],
         allowed_tools=allowed_tools(identity.role, intent),
     )
+    # A write request from a role with no write tools fails as a permission issue, not "rephrase"
+    can_write = any(TOOL_POLICIES[t].writes for t in deps.allowed_tools)
+    failure_reply = SAFE_FAILURE_REPLY if can_write or intent == "read" else NO_PERMISSION_REPLY
     history = memory.load_history(identity, state["session_id"])
     try:
         run, model = run_agent(state["prompt"], deps, history)
         answer = run.output
         memory.append_turn(identity, state["session_id"], run.new_messages_json())
     except (UnexpectedModelBehavior, UsageLimitExceeded) as e:
+        # e.g. the model kept calling a tool it isn't offered, or looped past the limits
         log.warning("[%s] agent gave up: %s", state["request_id"], e)
-        answer, model = SAFE_FAILURE_REPLY, None
+        answer, model = failure_reply, None
     except ModelUnavailable as e:
         answer, model = str(e), None
+    except Exception:
+        # e.g. tenant-mcp unreachable mid-run; never surface internals to the user
+        log.exception("[%s] agent run failed", state["request_id"])
+        answer, model = "The assistant is temporarily unavailable. Please try again shortly.", None
 
     confirmation = deps.confirmations[-1] if deps.confirmations else None
     if confirmation:
         # Deterministic wording: the model must not paraphrase a pending action as done
         answer = f"Please confirm: {confirmation.summary}"
     elif deps.verification_failed and not deps.actions:
-        answer = SAFE_FAILURE_REPLY
+        answer = failure_reply
     state["result"] = ChatResult(
         answer=answer, intent=intent, actions=deps.actions, confirmation=confirmation, model=model
     )
@@ -128,10 +134,10 @@ graph.add_edge("off_topic", END)
 app_graph = graph.compile()
 
 
-def run_workflow(prompt: str, identity: Identity, request_id: str, session_id: str) -> ChatResult:
+def run_workflow(prompt: str, caller: Caller, request_id: str, session_id: str) -> ChatResult:
     state: State = {
         "prompt": prompt,
-        "identity": identity,
+        "caller": caller,
         "request_id": request_id,
         "session_id": session_id,
         "intent": None,

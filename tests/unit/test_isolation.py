@@ -3,27 +3,24 @@
 import pytest
 from pydantic_ai.messages import ToolReturnPart
 
-from app.harness.confirmations import ConfirmationError, confirm
+from app.harness.tenant_client import ConfirmationError, confirm
 from app.services import settings as svc
-from app.workflow.graph import run_workflow
-from tests.conftest import ADMIN_A, ADMIN_B, EDITOR_A, TENANT_A, TENANT_B, VIEWER_A
+from app.workflow.graph import NO_PERMISSION_REPLY, run_workflow
+from tests.conftest import ADMIN_A, ADMIN_B, EDITOR_A, TENANT_A, TENANT_B, VIEWER_A, caller_for
 
 
 def _run(prompt, identity, session="s"):
-    return run_workflow(prompt, identity, "req-test", session)
+    return run_workflow(prompt, caller_for(identity), "req-test", session)
 
 
 def test_no_tool_accepts_a_tenant_argument(script):
     s = script("ok")
     _run("set the login theme", ADMIN_A)  # write intent + admin = every tool offered
-    from app.agent.agent import agent
-
-    tool_names = s.offered[0]
-    assert len(tool_names) == 12
-    for name in tool_names:
-        tool = agent._function_toolset.tools[name]
-        params = set(tool.function_schema.json_schema.get("properties", {}))
-        assert not any("tenant" in p for p in params), f"{name} exposes {params}"
+    tool_defs = s.tool_defs[0]
+    assert len(tool_defs) == 12
+    for tool_def in tool_defs:
+        params = set(tool_def.parameters_json_schema.get("properties", {}))
+        assert not any("tenant" in p for p in params), f"{tool_def.name} exposes {params}"
 
 
 def test_writes_only_touch_the_callers_tenant(script):
@@ -60,10 +57,24 @@ def test_viewer_is_not_offered_write_tools(script):
     assert not {"set_theme", "set_setting", "undo_last_change", "delete_page"} & set(s.offered[0])
 
 
+def test_viewer_false_change_claim_gets_permission_reply(script):
+    script("I have changed it to dark.", "The login page has been set to dark.")
+    result = _run("make login dark", VIEWER_A)
+    assert result.answer == NO_PERMISSION_REPLY
+    assert svc.get_setting(TENANT_A, "theme", "login").value == "light"
+
+
 def test_viewer_cannot_write_even_if_the_model_calls_a_hidden_tool(script):
     script([("set_theme", {"page_name": "login", "theme": "dark"})], "ok")
     result = _run("make login dark", VIEWER_A)
     assert result.actions == []
+    assert svc.get_setting(TENANT_A, "theme", "login").value == "light"
+
+
+def test_viewer_insisting_on_a_hidden_tool_gets_permission_reply(script):
+    script(*[[("set_theme", {"page_name": "login", "theme": "dark"})]] * 5)
+    result = _run("make login dark", VIEWER_A)
+    assert result.answer == NO_PERMISSION_REPLY
     assert svc.get_setting(TENANT_A, "theme", "login").value == "light"
 
 

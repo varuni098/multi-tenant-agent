@@ -6,7 +6,6 @@ import time
 from dataclasses import dataclass
 from functools import lru_cache
 
-import httpx
 from pydantic_ai.agent import AgentRunResult
 from pydantic_ai.exceptions import ModelAPIError
 from pydantic_ai.messages import ModelMessage
@@ -17,10 +16,12 @@ from pydantic_ai.usage import UsageLimits
 from app.agent.agent import agent
 from app.core.config import get_settings
 from app.harness.context import RunDeps
+from app.harness.tenant_client import build_toolset
 
 log = logging.getLogger(__name__)
 
-_TRANSIENT = (ModelAPIError, httpx.HTTPError, TimeoutError)
+# Model-side failures only; tenant-mcp failures are handled by the workflow
+_TRANSIENT = (ModelAPIError, TimeoutError)
 
 
 class ModelUnavailable(Exception):
@@ -86,6 +87,7 @@ def run_agent(prompt: str, deps: RunDeps, history: list[ModelMessage]) -> tuple[
                 deps=deps,
                 model=candidate.model,
                 message_history=history,
+                toolsets=[build_toolset(deps)],
                 usage_limits=limits,
                 model_settings={"timeout": s.llm_timeout_seconds},
             )

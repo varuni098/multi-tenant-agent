@@ -152,3 +152,20 @@ class OutboxEvent(Base):
     payload: Mapped[Any] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+
+
+class ToolCall(Base):
+    """Server-side log of every MCP tool call, including denied and failed ones."""
+
+    __tablename__ = "tool_calls"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(String(36), index=True)
+    actor: Mapped[str] = mapped_column(String(255))
+    channel: Mapped[str] = mapped_column(String(20))  # agent | external
+    tool: Mapped[str] = mapped_column(String(50))
+    args: Mapped[Any] = mapped_column(JSON)
+    outcome: Mapped[str] = mapped_column(String(20))  # ok | error | denied
+    duration_ms: Mapped[int] = mapped_column(Integer)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

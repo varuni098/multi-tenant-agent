@@ -11,12 +11,10 @@ from pydantic import BaseModel, Field
 from app.agent.warmup import ollama_ready, warm_up_model
 from app.core.config import get_settings
 from app.core.logging import setup_logging
-from app.db.session import ping
 from app.harness.auth import AuthError, authenticate
-from app.harness.confirmations import ConfirmationError, confirm
-from app.harness.context import Identity
+from app.harness.context import Caller
 from app.harness.ratelimit import RateLimited, check_rate_limit
-from app.services.errors import DomainError
+from app.harness.tenant_client import ConfirmationError, TenantServiceUnavailable, confirm, tenant_service_ready
 from app.workflow.graph import run_workflow
 
 setup_logging()
@@ -31,7 +29,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="Multi-Tenant Agent", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="Multi-Tenant Agent", version="0.4.0", lifespan=lifespan)
 bearer = HTTPBearer(auto_error=False)
 
 
@@ -44,21 +42,23 @@ async def request_id_middleware(request: Request, call_next: Callable[[Request],
     return response
 
 
-def current_identity(creds: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)]) -> Identity:
+def current_caller(request: Request, creds: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)]) -> Caller:
     if creds is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing bearer token", {"WWW-Authenticate": "Bearer"})
     try:
-        return authenticate(creds.credentials)
+        return authenticate(creds.credentials, request.state.request_id)
     except AuthError as e:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, str(e), {"WWW-Authenticate": "Bearer"}) from e
+    except TenantServiceUnavailable as e:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(e)) from e
 
 
-def rate_limited_identity(identity: Annotated[Identity, Depends(current_identity)]) -> Identity:
+def rate_limited_caller(caller: Annotated[Caller, Depends(current_caller)]) -> Caller:
     try:
-        check_rate_limit(identity)
+        check_rate_limit(caller.identity)
     except RateLimited as e:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, str(e), {"Retry-After": "60"}) from e
-    return identity
+    return caller
 
 
 # --- Schemas ---
@@ -113,12 +113,7 @@ def health() -> dict[str, Any]:
 @app.get("/ready")
 def ready(response: Response) -> dict[str, bool]:
     """Readiness: dependencies are reachable."""
-    checks = {"ollama": ollama_ready()}
-    try:
-        ping()
-        checks["database"] = True
-    except Exception:
-        checks["database"] = False
+    checks = {"ollama": ollama_ready(), "tenant_service": tenant_service_ready()}
     if not all(checks.values()):
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     return checks
@@ -126,12 +121,10 @@ def ready(response: Response) -> dict[str, bool]:
 
 # Sync handlers: FastAPI runs them in worker threads, so agent.run_sync() is safe
 @app.post("/v1/chat", response_model=ChatResponse)
-def chat(
-    req: ChatRequest, request: Request, identity: Annotated[Identity, Depends(rate_limited_identity)]
-) -> ChatResponse:
+def chat(req: ChatRequest, request: Request, caller: Annotated[Caller, Depends(rate_limited_caller)]) -> ChatResponse:
     request_id = request.state.request_id
     session_id = req.session_id or uuid.uuid4().hex
-    result = run_workflow(req.prompt, identity, request_id, session_id)
+    result = run_workflow(req.prompt, caller, request_id, session_id)
     return ChatResponse(
         answer=result.answer,
         intent=result.intent,
@@ -147,12 +140,12 @@ def chat(
 
 @app.post("/v1/chat/confirm", response_model=ConfirmResponse)
 def confirm_action(
-    req: ConfirmRequest, request: Request, identity: Annotated[Identity, Depends(rate_limited_identity)]
+    req: ConfirmRequest, request: Request, caller: Annotated[Caller, Depends(rate_limited_caller)]
 ) -> ConfirmResponse:
     try:
-        action = confirm(identity, req.token, request.state.request_id)
-    except ConfirmationError as e:
+        message = confirm(caller.identity, req.token, request.state.request_id)
+    except ConfirmationError as e:  # invalid/used token, other user, or the target changed meanwhile
         raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
-    except DomainError as e:  # e.g. the page was deleted meanwhile
-        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
-    return ConfirmResponse(message=action.message, request_id=request.state.request_id)
+    except TenantServiceUnavailable as e:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(e)) from e
+    return ConfirmResponse(message=message, request_id=request.state.request_id)
