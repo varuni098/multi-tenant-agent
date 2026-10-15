@@ -15,6 +15,9 @@ DOMAIN_WORDS = {
     "theme", "themes", "dark", "light", "mode", "page", "pages", "setting", "settings", "language",
     "layout", "compact", "comfortable", "brand", "color", "colour", "tips", "template", "templates",
     "history", "change", "changes", "changed", "undo", "revert", "screen", "screens",
+    "branding", "plan", "plans", "feature", "features", "role", "roles", "permission", "permissions",
+    "confirm", "confirmation", "inherit", "inheritance", "upgrade", "upgrading", "upgraded", "docs", "documentation",
+    "tenant", "tenants", "editor", "viewer", "admin", "locale",
 }  # fmt: skip
 
 OFF_TOPIC_REPLY = (

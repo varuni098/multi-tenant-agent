@@ -5,8 +5,8 @@ from typing import Any
 
 from app.graph.model import Graph, NodeRef, Rel
 
-# Labels the projection does not own (Phase 6 documentation nodes)
-UNMANAGED_LABELS = {"DocChunk", "Concept"}
+# Labels the MySQL projection does not own: the knowledge ingester writes them
+UNMANAGED_LABELS = {"Document", "DocChunk", "Concept"}
 
 
 @dataclass

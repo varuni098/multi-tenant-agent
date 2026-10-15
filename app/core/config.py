@@ -76,6 +76,17 @@ class Settings(BaseSettings):
     reconcile_interval_seconds: int = 3600
     graph_change_events_per_tenant: int = 50
 
+    # Knowledge / GraphRAG (Phase 6)
+    embedding_provider: Literal["ollama", "hash"] = "ollama"  # hash = deterministic, for tests
+    embedding_model: str = "nomic-embed-text"
+    embedding_dimensions: int = 768
+    docs_path: str = "docs"
+    knowledge_model_concepts: bool = False  # extra concept pass with the chat model
+    knowledge_watch_seconds: int = 0  # > 0: re-scan the docs folder at this interval
+    chunk_target_chars: int = 1800
+    chunk_overlap_chars: int = 200
+    search_top_k: int = 4
+
     @property
     def graph_mcp_base_url(self) -> str:
         return self.graph_mcp_url.removesuffix("/").removesuffix("/mcp")

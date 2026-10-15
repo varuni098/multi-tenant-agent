@@ -12,7 +12,7 @@ from langgraph.graph import END, StateGraph
 from pydantic_ai.exceptions import UnexpectedModelBehavior, UsageLimitExceeded
 
 from app.harness import memory
-from app.harness.context import Action, Caller, Denial, PendingConfirmation, RunDeps
+from app.harness.context import Action, Caller, Citation, Denial, PendingConfirmation, RunDeps
 from app.harness.guardrails import check_input, redact
 from app.harness.intent import OFF_TOPIC_REPLY, classify
 from app.harness.policy import TOOL_POLICIES, Intent, allowed_tools
@@ -32,6 +32,7 @@ class ChatResult:
     blocked: bool = False
     actions: list[Action] = field(default_factory=list)
     denials: list[Denial] = field(default_factory=list)
+    citations: list[Citation] = field(default_factory=list)
     confirmation: PendingConfirmation | None = None
     model: str | None = None
 
@@ -108,10 +109,22 @@ def run_agent_node(state: State) -> State:
         intent=intent,
         actions=deps.actions,
         denials=deps.denials,
+        citations=_unique(deps.citations),
         confirmation=confirmation,
         model=model,
     )
     return state
+
+
+def _unique(citations: list[Citation]) -> list[Citation]:
+    """Keep the first citation per source section (search_docs may run more than once)."""
+    seen: set[tuple[str, str]] = set()
+    out = []
+    for c in citations:
+        if (c.path, c.heading) not in seen:
+            seen.add((c.path, c.heading))
+            out.append(c)
+    return out
 
 
 def _after(next_node: str):

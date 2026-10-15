@@ -28,7 +28,7 @@ def _expected() -> Graph:
 
 def test_ontology_loads():
     o = load_ontology()
-    assert o.version == 1
+    assert o.version == 2
     assert {"Tenant", "Page", "Setting", "SettingKey", "Template", "Plan", "Feature", "Role", "Action"} <= set(
         o.classes
     )
@@ -246,7 +246,7 @@ def test_graph_tools_only_when_enabled():
     assert {"explain_setting", "can_apply", "impact_of_change"} <= with_graph
     assert not {"resolve_entity", "find_related", "graph_effective_settings"} & with_graph  # external clients only
     assert "impact_of_change" not in allowed_tools("editor", "read", graph=True)
-    assert len(server_tools("graph")) == 6 and len(server_tools("tenant")) == 12
+    assert len(server_tools("graph")) == 7 and len(server_tools("tenant")) == 12
 
 
 # --- Write gate (harness) with a stubbed policy engine ---

@@ -13,7 +13,7 @@ from pydantic_ai.toolsets import AbstractToolset
 
 from app.core.config import get_settings
 from app.core.service_context import HEADER, Purpose, ServiceContext, sign_context
-from app.harness.context import Action, Denial, Identity, PendingConfirmation, RunDeps
+from app.harness.context import Action, Citation, Denial, Identity, PendingConfirmation, RunDeps
 from app.harness.guardrails import redact
 from app.harness.policy import TOOL_POLICIES
 
@@ -142,7 +142,13 @@ async def _log_graph_call(ctx: RunContext[RunDeps], call_tool: CallToolFunc, nam
     if name not in ctx.deps.allowed_tools:
         return "You are not permitted to do that."
     log.info("[%s] graph %s(%s)", ctx.deps.request_id, name, redact(", ".join(f"{k}={v!r}" for k, v in args.items())))
-    return await call_tool(name, args)
+    result = await call_tool(name, args)
+    if name == "search_docs":
+        hits = result.get("result", []) if isinstance(result, dict) else result
+        for hit in hits if isinstance(hits, list) else []:
+            if isinstance(hit, dict) and {"rank", "title", "heading", "path"} <= hit.keys():
+                ctx.deps.citations.append(Citation(hit["rank"], hit["title"], hit["heading"], hit["path"]))
+    return result
 
 
 def _allowed(ctx: RunContext[RunDeps], tool_def: ToolDefinition) -> bool:

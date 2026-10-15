@@ -9,7 +9,7 @@
 # tenant_scoped classes carry a tenant_id property; graph queries never let a path
 # cross from one tenant's nodes into another's. Shared classes are global reference data.
 
-version: 1
+version: 2
 
 classes:
   Tenant:
@@ -61,15 +61,21 @@ classes:
     key: name
     required: [name]
     description: A base configuration tenants inherit from.
-  # Declared for Phase 6 (GraphRAG); no instances yet.
+  # Knowledge (Phase 6): written by the ingester, not by the MySQL projection
+  Document:
+    key: uid # "global:<path>" or "<tenant_id>:<path>"
+    tenant_scoped: optional # product docs are shared; tenant docs carry tenant_id
+    required: [uid, path, title, content_hash]
+    description: A source document (Markdown, HTML, PDF or text).
   DocChunk:
-    key: uid
-    required: [uid, text]
-    description: A chunk of product documentation.
+    key: uid # "<document uid>#<index>"
+    tenant_scoped: optional
+    required: [uid, text, chunk_index, embedding]
+    description: A section of a document, embedded for vector search.
   Concept:
     key: name
-    required: [name]
-    description: A domain concept documentation can mention.
+    required: [name, kind, terms]
+    description: A term from the domain vocabulary that documents mention.
 
 # out / in: allowed number of edges of this type per source / target node:
 # "1" exactly one, "0..1" at most one, "*" any number, "1..*" at least one.
@@ -88,8 +94,13 @@ relationships:
   - {type: OF_KEY, from: Setting, to: SettingKey, out: "1", in: "*"}
   - {type: CHANGED, from: ChangeEvent, to: Page, out: "0..1", in: "*"}
   - {type: CHANGED, from: ChangeEvent, to: Tenant, out: "0..1", in: "*"}
+  - {type: HAS_CHUNK, from: Document, to: DocChunk, out: "*", in: "1"}
   - {type: MENTIONS, from: DocChunk, to: Concept, out: "*", in: "*"}
-  - {type: ABOUT, from: Concept, to: SettingKey, out: "*", in: "*"}
+  - {type: ABOUT, from: Concept, to: SettingKey, out: "0..1", in: "0..1"}
+  - {type: ABOUT, from: Concept, to: Feature, out: "0..1", in: "0..1"}
+  - {type: ABOUT, from: Concept, to: Template, out: "0..1", in: "0..1"}
+  - {type: ABOUT, from: Concept, to: Plan, out: "0..1", in: "0..1"}
+  - {type: ABOUT, from: Concept, to: Role, out: "0..1", in: "0..1"}
 
 # Evaluated in this order by can_apply; the first failing rule is the reason for a denial.
 rules:
@@ -114,3 +125,29 @@ aliases:
   layout: [density, spacing, compact mode]
   brand_color: [brand colour, brand color, accent, accent colour, accent color, primary colour, primary color]
   show_tips: [tips, hints, onboarding, help tips]
+
+# Concept vocabulary for documentation (Phase 6). Entity concepts are generated from the
+# graph (setting keys with their aliases, features, templates, plans, roles) and linked to
+# that entity with ABOUT. Topic concepts are listed here. Terms are matched as whole words.
+concept_terms:
+  features:
+    custom_branding: [custom branding, branding]
+  templates:
+    standard: [standard template]
+    dark_first: [dark_first, dark first]
+  plans:
+    free: [free plan]
+    pro: [pro plan]
+  roles:
+    viewer: [viewer, viewers, read-only]
+    editor: [editor, editors]
+    admin: [admin, admins, administrator]
+topics:
+  inheritance: [inherit, inherits, inherited, inheriting, inheritance, override, overrides, effective value, tenant default]
+  confirmation: [confirm, confirmation, approve, approval, confirmation token]
+  undo: [undo, revert, reverts, roll back]
+  history: [history, change history, audit, who changed]
+  permissions: [permission, permissions, role, roles, not permitted]
+  tenant_isolation: [another tenant, other tenants, isolation, other organisations]
+  entitlement: [entitlement, upgrade, upgrading]
+  bulk_change: [bulk change, many pages, several pages, every page]

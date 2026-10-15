@@ -29,6 +29,12 @@ x-graph-env: &graph-env
   NEO4J_USER: neo4j
   NEO4J_PASSWORD: ${NEO4J_PASSWORD:-dev-graph-password}
 
+x-embed-env: &embed-env
+  OLLAMA_BASE_URL: http://ollama:11434/v1
+  OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:8b}
+  EMBEDDING_PROVIDER: ollama
+  EMBEDDING_MODEL: ${EMBEDDING_MODEL:-nomic-embed-text}
+
 x-broker-env: &broker-env
   RABBITMQ_URL: amqp://agent:${RABBITMQ_PASSWORD:-dev-broker-password}@rabbitmq:5672/
 
@@ -53,12 +59,15 @@ services:
       timeout: 5s
       retries: 10
 
-  # One-shot job: pulls the model into the ollama volume (no-op once cached)
+  # One-shot job: pulls the chat and embedding models into the ollama volume (no-op once cached)
   ollama-pull:
     image: ollama/ollama:latest
     environment:
       OLLAMA_HOST: http://ollama:11434
-    entrypoint: ["ollama", "pull", "${OLLAMA_MODEL:-qwen3:8b}"]
+    entrypoint:
+      - sh
+      - -c
+      - ollama pull ${OLLAMA_MODEL:-qwen3:8b} && ollama pull ${EMBEDDING_MODEL:-nomic-embed-text}
     networks: [services]
     depends_on:
       ollama:
@@ -183,7 +192,7 @@ services:
     build: .
     command: ["uvicorn", "app.graph_mcp.server:app", "--host", "0.0.0.0", "--port", "8002", "--workers", "2"]
     environment:
-      <<: [*auth-env, *graph-env]
+      <<: [*auth-env, *graph-env, *embed-env]
     networks: [graph, services]
     depends_on:
       neo4j:
@@ -193,6 +202,22 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+
+  # Ingests docs/ into the knowledge graph (chunks, embeddings, concepts); re-scans for changes
+  knowledge:
+    build: .
+    command: ["python", "-m", "app.knowledge.ingest", "--watch", "${KNOWLEDGE_WATCH_SECONDS:-30}"]
+    environment:
+      <<: [*graph-env, *embed-env]
+      KNOWLEDGE_MODEL_CONCEPTS: ${KNOWLEDGE_MODEL_CONCEPTS:-true}
+    networks: [graph, services]
+    depends_on:
+      neo4j:
+        condition: service_healthy
+      ollama-pull:
+        condition: service_completed_successfully
+      graph-sync:
+        condition: service_started # reference nodes exist for concept ABOUT links (re-linked every scan)
 
   app:
     build: .
@@ -259,6 +284,7 @@ services:
       NEO4J_PASSWORD: test-graph-password
       RABBITMQ_URL: amqp://test:test@rabbitmq-test:5672/
       RUN_INTEGRATION: "1"
+      EMBEDDING_PROVIDER: hash
     networks: [test]
     depends_on:
       neo4j-test:

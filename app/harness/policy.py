@@ -37,6 +37,7 @@ TOOL_POLICIES: dict[str, ToolPolicy] = {
     "explain_setting": ToolPolicy("viewer", server="graph"),
     "can_apply": ToolPolicy("viewer", server="graph"),
     "impact_of_change": ToolPolicy("admin", server="graph"),
+    "search_docs": ToolPolicy("viewer", server="graph"),
     "graph_effective_settings": ToolPolicy("viewer", server="graph", agent=False),
     "resolve_entity": ToolPolicy("viewer", server="graph", agent=False),
     "find_related": ToolPolicy("viewer", server="graph", agent=False),

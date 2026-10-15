@@ -64,6 +64,10 @@ services:
     <<: *dev-build
     develop: *dev-watch
 
+  knowledge:
+    <<: *dev-build
+    develop: *dev-watch # synced docs/ edits are re-ingested on the next scan
+
   graph-mcp:
     <<: *dev-build
     ports:

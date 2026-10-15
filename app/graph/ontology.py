@@ -44,6 +44,8 @@ class Ontology:
     rules: tuple[Rule, ...]
     inheritance: tuple[str, ...]
     aliases: dict[str, tuple[str, ...]]
+    concept_terms: dict[str, dict[str, tuple[str, ...]]]  # kind -> name -> terms
+    topics: dict[str, tuple[str, ...]]
 
     def rel_def(self, rel_type: str, from_label: str, to_label: str) -> RelDef | None:
         for r in self.relationships:
@@ -91,6 +93,11 @@ def parse_ontology(data: dict[str, Any]) -> Ontology:
         rules=tuple(Rule(r["id"], r["description"]) for r in data["rules"]),
         inheritance=tuple(data["inheritance"]),
         aliases={k: tuple(v) for k, v in (data.get("aliases") or {}).items()},
+        concept_terms={
+            kind: {name: tuple(terms) for name, terms in names.items()}
+            for kind, names in (data.get("concept_terms") or {}).items()
+        },
+        topics={k: tuple(v) for k, v in (data.get("topics") or {}).items()},
     )
 
 

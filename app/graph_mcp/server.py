@@ -22,12 +22,15 @@ from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from app.core.config import get_settings
 from app.core.logging import setup_logging
 from app.graph import queries, service
 from app.graph.client import get_driver, ping
 from app.harness.context import Identity
 from app.harness.guardrails import redact
 from app.harness.policy import TOOL_POLICIES, role_allows
+from app.knowledge import retrieval
+from app.knowledge.embeddings import EmbeddingUnavailable, get_embedder
 from app.mcp_server.principal import (
     AuthFailed,
     AuthMiddleware,
@@ -178,6 +181,20 @@ def find_related(entity_type: str, name: str, depth: int = 1) -> list[dict[str, 
         depth: 1 or 2.
     """
     return service.related(_tid(), entity_type, name, depth)
+
+
+@tool
+def search_docs(query: str) -> list[dict[str, Any]]:
+    """Search the product documentation (and this tenant's own docs) for how-to and policy questions.
+    Returns excerpts with citations like "[1] Templates › Switching templates"; cite them in the answer.
+
+    Args:
+        query: The question or topic, in natural language.
+    """
+    try:
+        return retrieval.search(get_driver(), get_embedder(), _tid(), query, get_settings().search_top_k)
+    except (retrieval.IndexNotReady, EmbeddingUnavailable) as e:
+        raise ToolError(str(e)) from e
 
 
 # --- Routes ---

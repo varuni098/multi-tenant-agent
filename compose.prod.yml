@@ -32,6 +32,11 @@ services:
     environment:
       APP_ENV: prod
 
+  knowledge:
+    restart: unless-stopped
+    volumes:
+      - ./docs:/app/docs:ro # update docs without rebuilding
+
   graph-mcp:
     restart: unless-stopped
     environment:

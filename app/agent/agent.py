@@ -24,6 +24,8 @@ SYSTEM_PROMPT = (
     "If a page name is unclear, use search_pages or list_pages. "
     "When asked why a setting has its value, use explain_setting if available. "
     "When asked whether a change is allowed, use can_apply if available and quote its reason. "
+    "For how-to, product or policy questions, use search_docs if available, answer only from its excerpts, "
+    "and cite the sources you used by their [number]. "
     "If a tool you need is not available, say you are not permitted to do that. "
     "If a tool says confirmation is required, tell the user what will happen and that they must confirm. "
     "Answer briefly using the tool results."

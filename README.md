@@ -16,8 +16,11 @@ app/
   mcp_server/ tenant-mcp: MCP tools, caller auth, confirmations, internal routes
   graph/      knowledge graph: ontology loader, projection, validator, drift,
               rules, queries, outbox relay, sync worker, reconciler
-  graph_mcp/  graph-mcp: read-only graph tools + the can_apply write gate
-ontology/     ontology.yaml (classes, relationships, cardinality, rules, aliases)
+  graph_mcp/  graph-mcp: read-only graph tools, search_docs, the can_apply write gate
+  knowledge/  docs ingestion (loaders, chunker, embeddings, concepts), GraphRAG retrieval, eval
+ontology/     ontology.yaml (classes, relationships, cardinality, rules, aliases, concepts)
+docs/         product/ (shared) and tenants/<tenant_id>/ (private) documentation
+evals/        retrieval.yaml: labelled questions for the retrieval eval
   agent/      Pydantic AI agent + tools, model warm-up
   workflow/   LangGraph request flow
   api/        FastAPI app (/v1/chat, /v1/chat/confirm, /health, /ready)
@@ -102,6 +105,7 @@ re-reads that tenant from MySQL and replaces its subgraph in one Neo4j transacti
 | `explain_setting` | viewer+ | why a value is what it is, with the inheritance chain |
 | `can_apply` | viewer+ | allowed or denied, the deciding rule, and the graph path |
 | `impact_of_change` | admin | what a template switch would change on this tenant's pages |
+| `search_docs` | viewer+ | documentation search with citations (see above) |
 | `graph_effective_settings`, `resolve_entity`, `find_related` | external clients only | `find_related` paths never cross into another tenant |
 
 **Write gate.** With `GRAPH_MODE=enforce` (the compose default), the harness asks
@@ -123,6 +127,42 @@ docker compose exec graph-sync python -m app.graph.reconcile          # repair d
 ```
 
 Neo4j Browser: http://localhost:7475 (dev) · RabbitMQ UI: http://localhost:15673 (user `agent`)
+
+## Documentation and GraphRAG
+
+`docs/product/` is shared product documentation. `docs/tenants/<tenant_id>/` is visible only
+to that tenant. Markdown, HTML, PDF and text are supported.
+
+**Ingestion** (`knowledge` service; re-scans every `KNOWLEDGE_WATCH_SECONDS`, default 30):
+
+1. Load and normalise each document. HTML headings are kept, and PDFs are split per page.
+2. Chunk by heading into sections of about 500 tokens (1,800 characters, 200 overlap).
+3. Embed with `nomic-embed-text` on Ollama (768 dimensions, with search prefixes) and store
+   as `DocChunk` nodes behind a Neo4j vector index.
+4. Link concepts: a whole-word match against the ontology vocabulary, plus an optional
+   constrained model pass (`KNOWLEDGE_MODEL_CONCEPTS`). Only known concepts are kept.
+   `DocChunk -MENTIONS-> Concept -ABOUT-> SettingKey | Feature | Template | Plan | Role`.
+5. Track freshness with content hashes. Unchanged documents are skipped, edited ones are
+   replaced atomically, and deleted ones are removed.
+
+**Retrieval** (`search_docs`, viewer+, on graph-mcp):
+
+1. Take the top vector matches for this tenant plus the shared docs.
+2. Add chunks that mention the query's concepts (one hop in the graph).
+3. Re-rank by `0.75 * similarity + 0.25 * concept overlap`.
+4. Return excerpts with citations ("[1] Templates › Switching templates").
+
+The agent answers only from the excerpts and cites them. The API response lists them in
+`citations[]`.
+
+**Eval** (`evals/retrieval.yaml`, 21 cases including tenant-leak checks):
+
+```bash
+docker compose exec graph-mcp python -m app.knowledge.evaluate
+```
+
+Live with `nomic-embed-text`: recall@4 = 1.00, MRR = 0.97, 0 leaks. The thresholds are
+0.85 / 0.70 / 0, and the command exits 1 below them.
 
 ## Agent tools
 
@@ -182,6 +222,7 @@ JWT -> rate limit -> check_tenant -> guard_input -> classify -> run_agent | off_
 | `rabbitmq`    | Event broker (outbox -> graph-sync)          | 15673 (UI)    |
 | `outbox-relay`| MySQL outbox -> RabbitMQ                     | –             |
 | `graph-sync`  | RabbitMQ -> Neo4j projection, reconciler     | –             |
+| `knowledge`   | Docs ingestion (embeddings, concepts)        | –             |
 | `redis`       | Sessions, rate limits, confirmations         | –             |
 | `migrate`     | One-shot: `alembic upgrade head` (+ seed in dev) | –         |
 
@@ -282,7 +323,8 @@ See `.env.example`. Key settings: `OLLAMA_MODEL` (default `qwen3:8b`; alternativ
 `llama3.1:8b`, `qwen3:14b` with more VRAM), `OLLAMA_FALLBACK_MODEL`, `JWT_SECRET` /
 `JWT_JWKS_URL`, `REDIS_URL`, `RATE_LIMIT_*`, `DOCKER_DB_PASSWORD`, `LOG_LEVEL`,
 `GRAPH_MODE` (off/advisory/enforce), `NEO4J_PASSWORD`, `RABBITMQ_PASSWORD`,
-`RECONCILE_INTERVAL_SECONDS`.
+`RECONCILE_INTERVAL_SECONDS`, `EMBEDDING_MODEL` (default `nomic-embed-text`), `KNOWLEDGE_MODEL_CONCEPTS`,
+`KNOWLEDGE_WATCH_SECONDS`.
 
 ## GPU
 

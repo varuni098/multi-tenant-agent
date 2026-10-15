@@ -42,6 +42,16 @@ class Denial:
 
 
 @dataclass
+class Citation:
+    """A documentation source returned by search_docs during the run."""
+
+    rank: int
+    title: str
+    heading: str
+    path: str
+
+
+@dataclass
 class PendingConfirmation:
     token: str
     tool: str
@@ -59,5 +69,6 @@ class RunDeps:
     actions: list[Action] = field(default_factory=list)
     confirmations: list[PendingConfirmation] = field(default_factory=list)
     denials: list[Denial] = field(default_factory=list)
+    citations: list[Citation] = field(default_factory=list)
     verify_retries: int = 0
     verification_failed: bool = False

@@ -1,0 +1,35 @@
+# Retrieval eval: does search_docs surface the right document?
+#   python -m app.knowledge.evaluate      (live stack, real embeddings)
+# expect: a path that must appear in the top k. absent: a path that must never appear (leakage).
+thresholds:
+  k: 4
+  recall_at_k: 0.85
+  mrr: 0.70
+
+tenants:
+  acme: a1b2c3d4-e5f6-7890-abcd-ef0123456789
+  globex: b2c3d4e5-f6a7-8901-bcde-f01234567890
+
+cases:
+  - {q: "How do I switch my page to dark mode?", expect: product/themes-and-appearance.md}
+  - {q: "Why does toggling twice not flip the theme back?", expect: product/themes-and-appearance.md}
+  - {q: "In what order are setting values inherited?", expect: product/settings-and-inheritance.md}
+  - {q: "What does a tenant default do?", expect: product/settings-and-inheritance.md}
+  - {q: "Which values are valid for the layout setting?", expect: product/languages-and-layout.md}
+  - {q: "Can I use Italian as a language?", expect: product/languages-and-layout.md}
+  - {q: "What is the dark_first template?", expect: product/templates.md}
+  - {q: "Can I preview what changes before switching template?", expect: product/templates.md}
+  - {q: "Why can't I set a custom brand colour on the free plan?", expect: product/plans-and-features.md}
+  - {q: "What do I get when upgrading to pro?", expect: product/plans-and-features.md}
+  - {q: "What can a viewer do?", expect: product/roles-and-permissions.md}
+  - {q: "Which actions are admin only?", expect: product/roles-and-permissions.md}
+  - {q: "How do I revert my last change?", expect: product/history-and-undo.md}
+  - {q: "Who changed the login page and when?", expect: product/history-and-undo.md}
+  - {q: "How long is a confirmation token valid?", expect: product/confirmations.md}
+  - {q: "Can someone else approve my delete request?", expect: product/confirmations.md}
+  - {q: "Why didn't my change apply to every page?", expect: product/faq.html}
+  - {q: "Can other organisations see my data?", expect: product/faq.html}
+  - {q: "Which theme should the Acme dashboard use?", tenant: acme, expect: tenants/a1b2c3d4-e5f6-7890-abcd-ef0123456789/acme-style-guide.md}
+  # Tenant isolation: Globex must never see Acme's private style guide
+  - {q: "Which theme should the Acme dashboard use?", tenant: globex, absent: tenants/a1b2c3d4-e5f6-7890-abcd-ef0123456789/acme-style-guide.md}
+  - {q: "Acme style guide login page marketing review", tenant: globex, absent: tenants/a1b2c3d4-e5f6-7890-abcd-ef0123456789/acme-style-guide.md}
