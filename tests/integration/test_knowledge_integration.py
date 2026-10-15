@@ -1,6 +1,6 @@
 """Knowledge ingestion and GraphRAG retrieval against real Neo4j (hash embedder, no GPU).
 
-    docker compose --profile test run --rm tests
+docker compose --profile test run --rm tests
 """
 
 import os
@@ -76,7 +76,8 @@ def test_concepts_link_chunks_to_ontology_entities(kg):
         """
         MATCH (d:Document {path: 'product/plans-and-features.md'})-[:HAS_CHUNK]->(c)-[:MENTIONS]->(k:Concept)
         OPTIONAL MATCH (k)-[:ABOUT]->(e)
-        RETURN collect(DISTINCT k.name) AS concepts, collect(DISTINCT labels(e)[0] + ':' + coalesce(e.name, e.key)) AS entities
+        RETURN collect(DISTINCT k.name) AS concepts,
+               collect(DISTINCT labels(e)[0] + ':' + coalesce(e.name, e.key)) AS entities
         """
     ).records[0]
     assert {"brand_color", "custom_branding", "free", "pro"} <= set(rec["concepts"])
