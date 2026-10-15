@@ -13,7 +13,7 @@ def test_health():
 
 
 def test_chat():
-    with agent.override(model=TestModel(custom_output_text="login is light")):
+    with agent.override(model=TestModel(call_tools=[], custom_output_text="login is light")):
         resp = client.post("/chat", json={"prompt": f"theme of login for {TENANT_A}?"})
     assert resp.status_code == 200
     assert resp.json() == {"tenant_uuid": TENANT_A, "agent_response": "login is light"}

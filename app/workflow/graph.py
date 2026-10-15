@@ -2,9 +2,10 @@ import logging
 from typing import TypedDict
 
 from langgraph.graph import END, StateGraph
+from pydantic_ai.exceptions import UnexpectedModelBehavior
 
 from app.agent.agent import agent
-from app.db.repository import get_all_tenant_pages
+from app.services.tenants import is_tenant_active
 
 log = logging.getLogger(__name__)
 
@@ -19,13 +20,9 @@ class TenantWorkflowState(TypedDict):
 
 # 2. Graph nodes
 def check_tenant_node(state: TenantWorkflowState):
-    """Step 1: Verify the tenant UUID exists in the database."""
+    """Step 1: Verify the tenant exists and is active."""
     log.info("Step 1: validating tenant UUID %s", state["tenant_uuid"])
-    pages = get_all_tenant_pages()
-    valid_uuids = {p["tenant_uuid"] for p in pages}
-
-    # An empty table allows everything, for testing convenience
-    state["is_valid"] = state["tenant_uuid"] in valid_uuids or not valid_uuids
+    state["is_valid"] = is_tenant_active(state["tenant_uuid"])
     log.info("Tenant %s", "verified" if state["is_valid"] else "NOT found")
     return state
 
@@ -33,8 +30,13 @@ def check_tenant_node(state: TenantWorkflowState):
 def run_agent_node(state: TenantWorkflowState):
     """Step 2: Run the Pydantic AI agent once validation passes."""
     log.info("Step 2: handing over to agent")
-    result = agent.run_sync(state["prompt"])
-    state["agent_response"] = result.output
+    try:
+        result = agent.run_sync(state["prompt"])
+        state["agent_response"] = result.output
+    except UnexpectedModelBehavior as e:
+        # e.g. the model kept calling a tool with invalid arguments past the retry limit
+        log.warning("Agent gave up: %s", e)
+        state["agent_response"] = "Sorry, I couldn't complete that request. Please rephrase or name the page exactly."
     return state
 
 

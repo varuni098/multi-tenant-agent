@@ -8,7 +8,8 @@ running fully locally on an Ollama-served LLM (default `qwen3:8b`).
 ```
 app/
   core/       config (pydantic-settings), logging
-  db/         SQLAlchemy models, session, repository, seed
+  db/         SQLAlchemy models, session, seed
+  services/   settings (resolution, validation, history, undo), admin, tenants
   agent/      Pydantic AI agent + tools, model warm-up
   workflow/   LangGraph tenant workflow
   api/        FastAPI app (/chat, /health, /ready)
@@ -16,6 +17,36 @@ migrations/   Alembic
 tests/        pytest (SQLite + TestModel, no GPU/MySQL needed)
 run_workflow.py   interactive CLI
 ```
+
+## Data model
+
+- **Reference:** `plans`, `features`, `plan_features`, `setting_keys` (type, allowed values,
+  pattern, default, required feature), `templates`, `template_settings`.
+- **Tenant data:** `tenants` (plan, template, status), `users` (role), `pages`, `settings`
+  (override per page, or tenant-wide when `page_id` is NULL; optimistic `version`).
+- **History:** `audit_log` (immutable; drives undo) and `outbox` (events for future
+  consumers), both written in the same transaction as each change.
+- `tenant_page_events` remains as a read-only MySQL view for old queries.
+
+Effective value of a setting: **page override → tenant default → template → key default**.
+
+| Setting       | Values                         | Notes                         |
+|---------------|--------------------------------|-------------------------------|
+| `theme`       | light, dark                    |                               |
+| `language`    | en, es, fr, de                 |                               |
+| `layout`      | comfortable, compact           |                               |
+| `brand_color` | `#rrggbb`                      | needs `custom_branding` (pro) |
+| `show_tips`   | true/false                     |                               |
+
+## Agent tools
+
+`list_pages`, `search_pages` (fuzzy), `get_theme`, `set_theme` (exact value, safe to
+repeat; toggling = read then set), `get_settings_for_page`, `set_setting`,
+`get_change_history`, `undo_last_change`. Tools return structured data. A wrong page,
+key or value makes the model retry, with the valid options in the error.
+
+Admin operations (`create_page`, `delete_page`, `bulk_set_setting`, `apply_template` in
+`app/services/admin.py`) are not exposed to the agent until roles and confirmation exist.
 
 ## Stack (docker compose)
 

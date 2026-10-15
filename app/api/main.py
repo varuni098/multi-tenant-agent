@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from app.agent.warmup import ollama_ready, warm_up_model
 from app.core.config import get_settings
 from app.core.logging import setup_logging
-from app.db.repository import ping
+from app.db.session import ping
 from app.workflow.graph import run_workflow
 from app.workflow.utils import extract_uuid
 

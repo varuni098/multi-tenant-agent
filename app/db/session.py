@@ -2,7 +2,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from functools import lru_cache
 
-from sqlalchemy import Engine, create_engine
+from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import get_settings
@@ -40,3 +40,9 @@ def session_scope() -> Iterator[Session]:
         raise
     finally:
         session.close()
+
+
+def ping() -> None:
+    """Raise if the database is unreachable."""
+    with get_engine().connect() as conn:
+        conn.execute(text("SELECT 1"))

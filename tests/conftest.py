@@ -9,16 +9,19 @@ os.environ["WARMUP_ON_STARTUP"] = "false"
 import pytest  # noqa: E402
 
 from app.db.models import Base  # noqa: E402
-from app.db.seed import seed  # noqa: E402
+from app.db.seed import TENANT_A, TENANT_B, seed  # noqa: E402
 from app.db.session import get_engine  # noqa: E402
 
-TENANT_A = "a1b2c3d4-e5f6-7890-abcd-ef0123456789"
-TENANT_B = "b2c3d4e5-f6a7-8901-bcde-f01234567890"
+__all__ = ["TENANT_A", "TENANT_B"]
 
 
 @pytest.fixture(autouse=True)
 def db():
-    """Fresh, seeded schema for every test."""
+    """Fresh, seeded schema for every test.
+
+    TENANT_A (Acme, free plan): login=light, dashboard=dark, settings=inherited (light from template)
+    TENANT_B (Globex, pro plan): login=dark
+    """
     engine = get_engine()
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
