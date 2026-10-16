@@ -3,3 +3,6 @@ pytest>=8.0
 ruff>=0.6
 mypy>=1.11
 pre-commit>=3.8
+pytest-cov>=5.0
+pydantic-evals==2.56.0  # same release as pydantic-ai-slim
+locust>=2.31

@@ -36,6 +36,7 @@ class ChatResult:
     citations: list[Citation] = field(default_factory=list)
     confirmation: PendingConfirmation | None = None
     model: str | None = None
+    tokens: int | None = None  # input + output tokens across the run's model requests
 
 
 class State(TypedDict):
@@ -94,9 +95,12 @@ def run_agent_node(state: State) -> State:
     can_write = any(TOOL_POLICIES[t].writes for t in deps.allowed_tools)
     failure_reply = SAFE_FAILURE_REPLY if can_write or intent == "read" else NO_PERMISSION_REPLY
     history = memory.load_history(identity, state["session_id"])
+    tokens: int | None = None
     try:
         run, model = run_agent(state["prompt"], deps, history)
         answer = run.output
+        usage = run.usage
+        tokens = (usage.input_tokens or 0) + (usage.output_tokens or 0)
         memory.append_turn(identity, state["session_id"], run.new_messages_json())
     except (UnexpectedModelBehavior, UsageLimitExceeded) as e:
         # e.g. the model kept calling a tool it isn't offered, or looped past the limits
@@ -123,6 +127,7 @@ def run_agent_node(state: State) -> State:
         citations=_unique(deps.citations),
         confirmation=confirmation,
         model=model,
+        tokens=tokens,
     )
     return state
 

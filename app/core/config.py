@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     max_prompt_chars: int = 2000
     rate_limit_user_per_minute: int = 20
     rate_limit_tenant_per_minute: int = 100
+    # Admission control per API process: at most this many agent turns at once. Others wait up to
+    # run_queue_seconds, then get 503 + Retry-After instead of queueing unboundedly on the GPU.
+    max_concurrent_runs: int = 4
+    run_queue_seconds: float = 5
     session_ttl_seconds: int = 3600
     session_max_turns: int = 10
     confirmation_ttl_seconds: int = 300

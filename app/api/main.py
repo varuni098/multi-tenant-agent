@@ -16,9 +16,10 @@ import threading
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from typing import Annotated, Any, Literal
 
+import anyio
 from fastapi import Depends, FastAPI, HTTPException, Path, Query, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -48,6 +49,7 @@ log = logging.getLogger(__name__)
 settings = get_settings()
 
 KEEPALIVE_SECONDS = 15
+BUSY_RETRY_AFTER = "10"
 LIVE_STREAM_MAX_SECONDS = 900  # clients reconnect (re-authenticating) at least this often
 
 
@@ -160,6 +162,32 @@ def admin_caller(caller: Annotated[Caller, Depends(current_caller)]) -> Caller:
     if caller.identity.role != "admin":
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Only admins can read the audit log.")
     return caller
+
+
+# --- Admission control ---
+
+# Each agent turn holds a slot for its whole run (including after a streaming client disconnects),
+# so abandoned turns can't pile up behind the GPU. Load testing showed latency snowballing past
+# 100 s without this.
+run_slots = threading.BoundedSemaphore(settings.max_concurrent_runs)
+
+
+def _busy() -> HTTPException:
+    return HTTPException(
+        status.HTTP_503_SERVICE_UNAVAILABLE,
+        "The assistant is busy. Please retry shortly.",
+        {"Retry-After": BUSY_RETRY_AFTER},
+    )
+
+
+@contextmanager
+def run_slot() -> Any:
+    if not run_slots.acquire(timeout=settings.run_queue_seconds):
+        raise _busy()
+    try:
+        yield
+    finally:
+        run_slots.release()
 
 
 # --- Schemas ---
@@ -325,7 +353,9 @@ def chat(req: ChatRequest, request: Request, caller: Annotated[Caller, Depends(r
     """One turn, answered when complete."""
     request_id = request.state.request_id
     session_id = req.session_id or uuid.uuid4().hex
-    return _chat_response(run_workflow(req.prompt, caller, request_id, session_id), session_id, request_id)
+    with run_slot():
+        result = run_workflow(req.prompt, caller, request_id, session_id)
+    return _chat_response(result, session_id, request_id)
 
 
 @app.post("/v1/chat/stream", tags=["chat"], responses={**SSE_RESPONSE, **ERROR_RESPONSES})
@@ -347,6 +377,8 @@ async def chat_stream(
     """
     request_id = request.state.request_id
     session_id = req.session_id or uuid.uuid4().hex
+    if not await anyio.to_thread.run_sync(lambda: run_slots.acquire(timeout=settings.run_queue_seconds)):
+        raise _busy()
     events: queue.Queue[tuple[str, Any] | None] = queue.Queue()
 
     def work() -> None:
@@ -357,6 +389,7 @@ async def chat_stream(
             log.exception("[%s] streamed turn failed", request_id)
             events.put(("error", {"code": "internal", "message": "The turn failed.", "request_id": request_id}))
         finally:
+            run_slots.release()
             events.put(None)
 
     # Carry context variables (e.g. model overrides, tracing) into the worker thread

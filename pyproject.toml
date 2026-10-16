@@ -25,3 +25,15 @@ plugins = ["pydantic.mypy"]
 testpaths = ["tests"]
 pythonpath = [".", "ui"]
 addopts = "-q"
+markers = [
+    "isolation: tenant isolation, role escalation and injection suite (merge-blocking)",
+]
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["app/db/seed.py"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 75 # unit tests alone; graph and knowledge code is covered by the integration profile

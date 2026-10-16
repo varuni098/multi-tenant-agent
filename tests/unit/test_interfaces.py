@@ -258,6 +258,26 @@ def test_live_events_require_auth():
     assert client.get("/v1/events").status_code == 401
 
 
+# --- Admission control ---
+
+
+def test_busy_api_sheds_load_instead_of_queueing(script, settings, monkeypatch):
+    settings.run_queue_seconds = 0.05
+    monkeypatch.setattr(main, "run_slots", threading.BoundedSemaphore(1))
+    main.run_slots.acquire()  # the only slot is taken
+    for path in ("/v1/chat", "/v1/chat/stream"):
+        resp = client.post(path, json={"prompt": "theme of login?"}, headers=_auth())
+        assert resp.status_code == 503 and resp.headers["Retry-After"] == main.BUSY_RETRY_AFTER
+        assert resp.json()["error"]["code"] == "unavailable"
+    main.run_slots.release()
+    script("Light.")
+    assert client.post("/v1/chat", json={"prompt": "theme of login?"}, headers=_auth()).status_code == 200
+    # Streamed turns give their slot back when they finish
+    script("Light.")
+    client.post("/v1/chat/stream", json={"prompt": "theme of login?"}, headers=_auth())
+    assert main.run_slots.acquire(timeout=2)
+
+
 # --- Readiness ---
 
 

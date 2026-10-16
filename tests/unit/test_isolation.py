@@ -8,6 +8,8 @@ from app.services import settings as svc
 from app.workflow.graph import NO_PERMISSION_REPLY, run_workflow
 from tests.conftest import ADMIN_A, ADMIN_B, EDITOR_A, TENANT_A, TENANT_B, VIEWER_A, caller_for
 
+pytestmark = pytest.mark.isolation
+
 
 def _run(prompt, identity, session="s"):
     return run_workflow(prompt, caller_for(identity), "req-test", session)
