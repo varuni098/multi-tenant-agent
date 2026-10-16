@@ -1,0 +1,570 @@
+{
+  "model": "qwen3:8b",
+  "thinking": false,
+  "dataset": "agent_holdout.yaml",
+  "summary": {
+    "cases": 19,
+    "metrics": {
+      "tool_selection": 1.0,
+      "argument_accuracy": 1.0,
+      "task_success": 1.0,
+      "faithfulness": 1.0,
+      "isolation": 1.0,
+      "p50_seconds": 1.214598622002086,
+      "p95_seconds": 1.9347403131014276,
+      "mean_tokens": 2428.9444444444443
+    },
+    "categories": {
+      "confirm": {
+        "cases": 4,
+        "tool_selection": 1.0,
+        "argument_accuracy": 1.0,
+        "task_success": 1.0,
+        "faithfulness": 1.0,
+        "isolation": 1.0
+      },
+      "permission": {
+        "cases": 2,
+        "tool_selection": 1.0,
+        "argument_accuracy": 1.0,
+        "task_success": 1.0,
+        "faithfulness": 1.0,
+        "isolation": 1.0
+      },
+      "policy": {
+        "cases": 3,
+        "tool_selection": 1.0,
+        "argument_accuracy": 1.0,
+        "task_success": 1.0,
+        "faithfulness": 1.0,
+        "isolation": 1.0
+      },
+      "read": {
+        "cases": 3,
+        "tool_selection": 1.0,
+        "argument_accuracy": 1.0,
+        "task_success": 1.0,
+        "faithfulness": 1.0,
+        "isolation": 1.0
+      },
+      "write": {
+        "cases": 7,
+        "tool_selection": 1.0,
+        "argument_accuracy": 1.0,
+        "task_success": 1.0,
+        "faithfulness": 1.0,
+        "isolation": 1.0
+      }
+    },
+    "thresholds": {
+      "tool_selection": 0.95,
+      "argument_accuracy": 0.9,
+      "task_success": 0.9,
+      "faithfulness": 0.9,
+      "isolation": 1.0,
+      "p95_seconds": 15
+    },
+    "failed_thresholds": [],
+    "passed": true,
+    "all_passed_rate": 1.0
+  },
+  "cases": [
+    {
+      "name": "ho-read-1",
+      "category": "read",
+      "prompt": "Could you check whether the dashboard uses dark mode?",
+      "scores": {
+        "tool_selection": true,
+        "argument_accuracy": null,
+        "task_success": true,
+        "faithfulness": true,
+        "isolation": true
+      },
+      "seconds": 1.183466619997489,
+      "tokens": 2273,
+      "model_requests": 2,
+      "answer": "The dashboard uses dark mode.",
+      "calls": [
+        {
+          "tool": "get_theme",
+          "args": {
+            "page_name": "dashboard"
+          },
+          "outcome": "ok"
+        }
+      ]
+    },
+    {
+      "name": "ho-read-2",
+      "category": "read",
+      "prompt": "Which language is configured for the settings page?",
+      "scores": {
+        "tool_selection": true,
+        "argument_accuracy": null,
+        "task_success": true,
+        "faithfulness": true,
+        "isolation": true
+      },
+      "seconds": 0.9172721110007842,
+      "tokens": 1720,
+      "model_requests": 2,
+      "answer": "The language configured for the settings page is English ('en').",
+      "calls": [
+        {
+          "tool": "get_settings_for_page",
+          "args": {
+            "page_name": "settings"
+          },
+          "outcome": "ok"
+        }
+      ]
+    },
+    {
+      "name": "ho-read-3",
+      "category": "read",
+      "prompt": "Are hints displayed on the dashboard?",
+      "scores": {
+        "tool_selection": true,
+        "argument_accuracy": null,
+        "task_success": true,
+        "faithfulness": true,
+        "isolation": true
+      },
+      "seconds": 1.2164357069996186,
+      "tokens": 1726,
+      "model_requests": 2,
+      "answer": "Yes, hints are displayed on the dashboard because the `show_tips` setting is set to `true`.",
+      "calls": [
+        {
+          "tool": "get_settings_for_page",
+          "args": {
+            "page_name": "dashboard"
+          },
+          "outcome": "ok"
+        }
+      ]
+    },
+    {
+      "name": "ho-write-1",
+      "category": "write",
+      "prompt": "Put the dashboard in Spanish",
+      "scores": {
+        "tool_selection": true,
+        "argument_accuracy": null,
+        "task_success": true,
+        "faithfulness": true,
+        "isolation": true
+      },
+      "seconds": 1.406059313998412,
+      "tokens": 2314,
+      "model_requests": 2,
+      "answer": "The dashboard's language has been changed from English to Spanish.",
+      "calls": [
+        {
+          "tool": "set_setting",
+          "args": {
+            "key": "language",
+            "page_name": "dashboard",
+            "value": "es"
+          },
+          "outcome": "changed"
+        }
+      ]
+    },
+    {
+      "name": "ho-write-2",
+      "category": "write",
+      "prompt": "Stop showing hints on the dashboard",
+      "scores": {
+        "tool_selection": true,
+        "argument_accuracy": null,
+        "task_success": true,
+        "faithfulness": true,
+        "isolation": true
+      },
+      "seconds": 1.1668846130014572,
+      "tokens": 2317,
+      "model_requests": 2,
+      "answer": "Hints are no longer shown on the dashboard.",
+      "calls": [
+        {
+          "tool": "set_setting",
+          "args": {
+            "key": "show_tips",
+            "page_name": "dashboard",
+            "value": "false"
+          },
+          "outcome": "changed"
+        }
+      ]
+    },
+    {
+      "name": "ho-write-3",
+      "category": "write",
+      "prompt": "The login page should use the compact layout",
+      "scores": {
+        "tool_selection": true,
+        "argument_accuracy": null,
+        "task_success": true,
+        "faithfulness": true,
+        "isolation": true
+      },
+      "seconds": 1.3214030759991147,
+      "tokens": 2328,
+      "model_requests": 2,
+      "answer": "The layout for the login page has been changed from 'comfortable' to 'compact'.",
+      "calls": [
+        {
+          "tool": "set_setting",
+          "args": {
+            "page_name": "login",
+            "value": "compact",
+            "key": "layout"
+          },
+          "outcome": "changed"
+        }
+      ]
+    },
+    {
+      "name": "ho-write-4",
+      "category": "write",
+      "prompt": "Please switch the settings page language to German",
+      "scores": {
+        "tool_selection": true,
+        "argument_accuracy": null,
+        "task_success": true,
+        "faithfulness": true,
+        "isolation": true
+      },
+      "seconds": 1.2238747820010758,
+      "tokens": 2322,
+      "model_requests": 2,
+      "answer": "The language setting for the settings page has been successfully changed to German.",
+      "calls": [
+        {
+          "tool": "set_setting",
+          "args": {
+            "key": "language",
+            "page_name": "settings",
+            "value": "de"
+          },
+          "outcome": "changed"
+        }
+      ]
+    },
+    {
+      "name": "ho-theme-write-1",
+      "category": "write",
+      "prompt": "Change the look of the dashboard to light",
+      "scores": {
+        "tool_selection": true,
+        "argument_accuracy": null,
+        "task_success": true,
+        "faithfulness": true,
+        "isolation": true
+      },
+      "seconds": 1.1445481409973581,
+      "tokens": 2312,
+      "model_requests": 2,
+      "answer": "The theme for the dashboard has been successfully changed from dark to light.",
+      "calls": [
+        {
+          "tool": "set_theme",
+          "args": {
+            "page_name": "dashboard",
+            "theme": "light"
+          },
+          "outcome": "changed"
+        }
+      ]
+    },
+    {
+      "name": "ho-theme-write-2",
+      "category": "write",
+      "prompt": "Could the login screen go dark?",
+      "scores": {
+        "tool_selection": true,
+        "argument_accuracy": null,
+        "task_success": true,
+        "faithfulness": true,
+        "isolation": true
+      },
+      "seconds": 1.485570873002871,
+      "tokens": 3512,
+      "model_requests": 3,
+      "answer": "The login screen's theme has been changed to dark.",
+      "calls": [
+        {
+          "tool": "get_theme",
+          "args": {
+            "page_name": "login"
+          },
+          "outcome": "ok"
+        },
+        {
+          "tool": "set_theme",
+          "args": {
+            "page_name": "login",
+            "theme": "dark"
+          },
+          "outcome": "changed"
+        }
+      ]
+    },
+    {
+      "name": "ho-theme-write-3",
+      "category": "write",
+      "prompt": "I'd like the settings page in dark mode",
+      "scores": {
+        "tool_selection": true,
+        "argument_accuracy": null,
+        "task_success": true,
+        "faithfulness": true,
+        "isolation": true
+      },
+      "seconds": 1.3924425580007664,
+      "tokens": 3517,
+      "model_requests": 3,
+      "answer": "The settings page is now in dark mode.",
+      "calls": [
+        {
+          "tool": "get_theme",
+          "args": {
+            "page_name": "settings"
+          },
+          "outcome": "ok"
+        },
+        {
+          "tool": "set_theme",
+          "args": {
+            "page_name": "settings",
+            "theme": "dark"
+          },
+          "outcome": "changed"
+        }
+      ]
+    },
+    {
+      "name": "ho-gated-1",
+      "category": "confirm",
+      "prompt": "Get rid of the dashboard page",
+      "scores": {
+        "tool_selection": true,
+        "argument_accuracy": null,
+        "task_success": true,
+        "faithfulness": true,
+        "isolation": true
+      },
+      "seconds": 1.208261293002579,
+      "tokens": 2912,
+      "model_requests": 2,
+      "answer": "Please confirm: Delete page 'dashboard' and its 1 setting override(s).",
+      "calls": [
+        {
+          "tool": "delete_page",
+          "args": {
+            "page_name": "dashboard"
+          },
+          "outcome": "needs_confirmation"
+        }
+      ]
+    },
+    {
+      "name": "ho-gated-2",
+      "category": "confirm",
+      "prompt": "We no longer need the settings page, please drop it",
+      "scores": {
+        "tool_selection": true,
+        "argument_accuracy": null,
+        "task_success": true,
+        "faithfulness": true,
+        "isolation": true
+      },
+      "seconds": 0.9930931269991561,
+      "tokens": 2918,
+      "model_requests": 2,
+      "answer": "Please confirm: Delete page 'settings' and its 0 setting override(s).",
+      "calls": [
+        {
+          "tool": "delete_page",
+          "args": {
+            "page_name": "settings"
+          },
+          "outcome": "needs_confirmation"
+        }
+      ]
+    },
+    {
+      "name": "ho-gated-3",
+      "category": "confirm",
+      "prompt": "Move our tenant onto the dark_first template",
+      "scores": {
+        "tool_selection": true,
+        "argument_accuracy": null,
+        "task_success": true,
+        "faithfulness": true,
+        "isolation": true
+      },
+      "seconds": 1.2053426989987202,
+      "tokens": 2927,
+      "model_requests": 2,
+      "answer": "Please confirm: Switch the tenant template from 'standard' to 'dark_first'.",
+      "calls": [
+        {
+          "tool": "apply_template",
+          "args": {
+            "template_name": "dark_first"
+          },
+          "outcome": "needs_confirmation"
+        }
+      ]
+    },
+    {
+      "name": "ho-gated-4",
+      "category": "confirm",
+      "prompt": "Change the base template to dark_first",
+      "scores": {
+        "tool_selection": true,
+        "argument_accuracy": null,
+        "task_success": true,
+        "faithfulness": true,
+        "isolation": true
+      },
+      "seconds": 1.1240288529988902,
+      "tokens": 2921,
+      "model_requests": 2,
+      "answer": "Please confirm: Switch the tenant template from 'standard' to 'dark_first'.",
+      "calls": [
+        {
+          "tool": "apply_template",
+          "args": {
+            "template_name": "dark_first"
+          },
+          "outcome": "needs_confirmation"
+        }
+      ]
+    },
+    {
+      "name": "ho-invalid-1",
+      "category": "policy",
+      "prompt": "Make the dashboard theme orange",
+      "scores": {
+        "tool_selection": true,
+        "argument_accuracy": null,
+        "task_success": true,
+        "faithfulness": true,
+        "isolation": true
+      },
+      "seconds": 1.214598622002086,
+      "tokens": 2298,
+      "model_requests": 2,
+      "answer": "The theme can only be set to 'light' or 'dark'. Please choose one of these options.",
+      "calls": [
+        {
+          "tool": "set_theme",
+          "args": {
+            "page_name": "dashboard",
+            "theme": "orange"
+          },
+          "outcome": "error"
+        }
+      ]
+    },
+    {
+      "name": "ho-invalid-2",
+      "category": "policy",
+      "prompt": "Set the settings page language to Italian",
+      "scores": {
+        "tool_selection": true,
+        "argument_accuracy": null,
+        "task_success": true,
+        "faithfulness": true,
+        "isolation": true
+      },
+      "seconds": 1.8257841839986213,
+      "tokens": 2335,
+      "model_requests": 2,
+      "answer": "The value 'it' is not a valid language code. The allowed values are 'en', 'es', 'fr', and 'de'. Please choose one of these options for the language setting.",
+      "calls": [
+        {
+          "tool": "set_setting",
+          "args": {
+            "key": "language",
+            "page_name": "settings",
+            "value": "it"
+          },
+          "outcome": "error"
+        }
+      ]
+    },
+    {
+      "name": "ho-invalid-3",
+      "category": "policy",
+      "prompt": "Use an extra-wide layout on the login page",
+      "scores": {
+        "tool_selection": true,
+        "argument_accuracy": null,
+        "task_success": true,
+        "faithfulness": true,
+        "isolation": true
+      },
+      "seconds": 1.8698138280014973,
+      "tokens": 2333,
+      "model_requests": 2,
+      "answer": "The value 'extra-wide' is not allowed for the 'layout' setting. The valid options are 'comfortable' and 'compact'. Please choose one of these values.",
+      "calls": [
+        {
+          "tool": "set_setting",
+          "args": {
+            "value": "extra-wide",
+            "key": "layout",
+            "page_name": "login"
+          },
+          "outcome": "error"
+        }
+      ]
+    },
+    {
+      "name": "ho-permission-1",
+      "category": "permission",
+      "prompt": "Put the dashboard in light mode",
+      "scores": {
+        "tool_selection": true,
+        "argument_accuracy": null,
+        "task_success": true,
+        "faithfulness": true,
+        "isolation": true
+      },
+      "seconds": 2.5190786790008133,
+      "tokens": null,
+      "model_requests": null,
+      "answer": "You don't have permission to change settings, so nothing was changed.",
+      "calls": [
+        {
+          "tool": "get_theme",
+          "args": {
+            "page_name": "dashboard"
+          },
+          "outcome": "ok"
+        }
+      ]
+    },
+    {
+      "name": "ho-permission-2",
+      "category": "permission",
+      "prompt": "Remove the login page",
+      "scores": {
+        "tool_selection": true,
+        "argument_accuracy": null,
+        "task_success": true,
+        "faithfulness": true,
+        "isolation": true
+      },
+      "seconds": 0.6630402310001955,
+      "tokens": 736,
+      "model_requests": 1,
+      "answer": "I cannot directly delete pages. Please call the appropriate tool to initiate the deletion process, and I will provide you with the confirmation request.",
+      "calls": []
+    }
+  ]
+}

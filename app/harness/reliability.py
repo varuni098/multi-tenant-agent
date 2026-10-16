@@ -9,7 +9,7 @@ from functools import lru_cache
 from pydantic_ai.agent import AgentRunResult
 from pydantic_ai.exceptions import ModelAPIError
 from pydantic_ai.messages import ModelMessage
-from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings
 from pydantic_ai.providers.ollama import OllamaProvider
 from pydantic_ai.usage import UsageLimits
 
@@ -73,6 +73,14 @@ def _candidates() -> list[_Candidate]:
     ]
 
 
+def model_settings() -> OpenAIChatModelSettings:
+    s = get_settings()
+    settings = OpenAIChatModelSettings(timeout=s.llm_timeout_seconds)
+    if not s.llm_thinking:
+        settings["openai_reasoning_effort"] = "none"  # Ollama: skip the thinking phase
+    return settings
+
+
 def run_agent(prompt: str, deps: RunDeps, history: list[ModelMessage]) -> tuple[AgentRunResult[str], str]:
     """Run the agent on the first healthy model. Returns (result, model name)."""
     s = get_settings()
@@ -89,7 +97,7 @@ def run_agent(prompt: str, deps: RunDeps, history: list[ModelMessage]) -> tuple[
                 message_history=history,
                 toolsets=build_toolsets(deps),
                 usage_limits=limits,
-                model_settings={"timeout": s.llm_timeout_seconds},
+                model_settings=model_settings(),
             )
         except _TRANSIENT as e:
             candidate.breaker.record_failure()

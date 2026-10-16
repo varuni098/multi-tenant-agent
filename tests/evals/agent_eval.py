@@ -38,16 +38,17 @@ def main() -> int:
     parser.add_argument("--model", help="Ollama model (default: OLLAMA_MODEL)")
     parser.add_argument("--only", help="run cases whose name contains this text")
     parser.add_argument("--limit", type=int, help="run at most this many cases")
+    parser.add_argument("--dataset", type=Path, default=DATASET, help="dataset file (default: evals/agent.yaml)")
     parser.add_argument("--compare", nargs=2, metavar=("BASELINE", "CANDIDATE"), help="compare two result files")
     args = parser.parse_args()
     if args.compare:
         return compare(Path(args.compare[0]), Path(args.compare[1]))
     if args.model:
         os.environ["OLLAMA_MODEL"] = args.model
-    return run(args.only, args.limit)
+    return run(args.dataset, args.only, args.limit)
 
 
-def run(only: str | None, limit: int | None) -> int:
+def run(dataset_file: Path, only: str | None, limit: int | None) -> int:
     # Importing the test setup pins an isolated environment first: temp SQLite, in-memory
     # store, graph off, an in-process tenant-mcp port. Only then are app modules loaded.
     from tests import conftest
@@ -65,9 +66,10 @@ def run(only: str | None, limit: int | None) -> int:
     from app.services import settings as svc
     from app.workflow.graph import run_workflow
 
-    spec = yaml.safe_load(DATASET.read_text(encoding="utf-8"))
+    spec = yaml.safe_load(dataset_file.read_text(encoding="utf-8"))
     cases = [c for c in scoring.expand(spec) if not only or only in c["name"]][: limit or None]
     model = get_settings().ollama_model
+    thinking = get_settings().llm_thinking
     users = {
         "acme_viewer": Identity(conftest.TENANT_A, "viewer@acme.test", "viewer"),
         "acme_editor": Identity(conftest.TENANT_A, "editor@acme.test", "editor"),
@@ -130,6 +132,7 @@ def run(only: str | None, limit: int | None) -> int:
             "other_unchanged": snapshot(other) == seeded_other,
             "foreign_markers": markers[other],
             "tokens": result.tokens,
+            "model_requests": result.model_requests,
             "seconds": seconds,
         }
 
@@ -140,7 +143,7 @@ def run(only: str | None, limit: int | None) -> int:
             cases=[Case(name=c["name"], inputs=c, metadata={"category": c["category"]}) for c in cases],
             evaluators=[ToolSelection(), ArgumentAccuracy(), TaskSuccess(), Faithfulness(), Isolation()],
         )
-        print(f"Running {len(cases)} cases on {model} ...", flush=True)
+        print(f"Running {len(cases)} cases from {dataset_file.name} on {model} (thinking {thinking}) ...", flush=True)
         report = dataset.evaluate_sync(task, name=model, max_concurrency=1, progress=False)
     finally:
         stop()
@@ -159,6 +162,7 @@ def run(only: str | None, limit: int | None) -> int:
                 "scores": scores,
                 "seconds": out["seconds"],
                 "tokens": out["tokens"],
+                "model_requests": out["model_requests"],
                 "answer": out["answer"],
                 "calls": out["calls"],
             }
@@ -179,8 +183,15 @@ def run(only: str | None, limit: int | None) -> int:
     summary = scoring.summarize(rows, spec["thresholds"])
     _print(model, summary, rows)
     RESULTS.mkdir(parents=True, exist_ok=True)
-    out_file = RESULTS / f"agent-{model.replace(':', '_').replace('/', '_')}-{datetime.now(UTC):%Y%m%dT%H%M%SZ}.json"
-    out_file.write_text(json.dumps({"model": model, "summary": summary, "cases": rows}, indent=2, default=str))
+    tag = f"{model.replace(':', '_').replace('/', '_')}{'-thinking' if thinking else ''}"
+    out_file = RESULTS / f"{dataset_file.stem}-{tag}-{datetime.now(UTC):%Y%m%dT%H%M%SZ}.json"
+    out_file.write_text(
+        json.dumps(
+            {"model": model, "thinking": thinking, "dataset": dataset_file.name, "summary": summary, "cases": rows},
+            indent=2,
+            default=str,
+        )
+    )
     print(f"\nWrote {out_file.relative_to(ROOT)}")
     return 0 if summary["passed"] else 1
 

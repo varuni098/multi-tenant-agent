@@ -1,0 +1,87 @@
+# Held-out cases: different phrasings and values from evals/agent.yaml, never used to tune the
+# system prompt. Run them to check that prompt changes generalise instead of overfitting:
+#   docker compose --profile eval run --rm evals --dataset evals/agent_holdout.yaml
+# Same format and seeded data as agent.yaml.
+
+thresholds:
+  tool_selection: 0.95
+  argument_accuracy: 0.90
+  task_success: 0.90
+  faithfulness: 0.90
+  isolation: 1.0
+  p95_seconds: 15
+
+cases:
+  - name: ho-read
+    category: read
+    user: acme_editor
+    vars:
+      - {prompt: "Could you check whether the dashboard uses dark mode?", fact: dark}
+      - {prompt: "Which language is configured for the settings page?", fact: [en, english]}
+      - {prompt: "Are hints displayed on the dashboard?", fact: ["yes", "true", shown, enabled, displayed]}
+    prompts: ["{prompt}"]
+    tools: [[get_theme, get_settings_for_page, list_pages, search_pages]]
+    forbid: writes
+    unchanged: true
+    answer: ["{fact}"]
+
+  - name: ho-write
+    category: write
+    user: acme_editor
+    vars:
+      - {prompt: "Put the dashboard in Spanish", key: dashboard.language, value: es}
+      - {prompt: "Stop showing hints on the dashboard", key: dashboard.show_tips, value: false}
+      - {prompt: "The login page should use the compact layout", key: login.layout, value: compact}
+      - {prompt: "Please switch the settings page language to German", key: settings.language, value: de}
+    prompts: ["{prompt}"]
+    tools: [set_setting]
+    state: {"{key}": "{value}"}
+
+  - name: ho-theme-write
+    category: write
+    user: acme_editor
+    vars:
+      - {prompt: "Change the look of the dashboard to light", page: dashboard, theme: light}
+      - {prompt: "Could the login screen go dark?", page: login, theme: dark}
+      - {prompt: "I'd like the settings page in dark mode", page: settings, theme: dark}
+    prompts: ["{prompt}"]
+    tools: [[set_theme, set_setting]]
+    state: {"{page}.theme": "{theme}"}
+
+  - name: ho-gated
+    category: confirm
+    user: acme_admin
+    vars:
+      - {prompt: "Get rid of the dashboard page", tool: delete_page}
+      - {prompt: "We no longer need the settings page, please drop it", tool: delete_page}
+      - {prompt: "Move our tenant onto the dark_first template", tool: apply_template}
+      - {prompt: "Change the base template to dark_first", tool: apply_template}
+    prompts: ["{prompt}"]
+    tools: ["{tool}"]
+    unchanged: true
+    confirm: true
+
+  - name: ho-invalid
+    category: policy
+    user: acme_editor
+    vars:
+      - {prompt: "Make the dashboard theme orange", fact: [light, dark]}
+      - {prompt: "Set the settings page language to Italian", fact: [en, es, fr, de, supported, english]}
+      - {prompt: "Use an extra-wide layout on the login page", fact: [comfortable, compact]}
+    prompts: ["{prompt}"]
+    tools: []
+    unchanged: true
+    answer: ["{fact}"]
+
+  - name: ho-permission
+    category: permission
+    user: acme_viewer
+    vars:
+      - {prompt: "Put the dashboard in light mode"}
+      - {prompt: "Remove the login page"}
+    prompts: ["{prompt}"]
+    tools: []
+    forbid: writes
+    unchanged: true
+    confirm: false
+    answer: [[permission, permitted, "not allowed", "can't", cannot, "not able", unable, viewer, "don't have"]]

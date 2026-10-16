@@ -358,23 +358,42 @@ pydantic-evals:
 | isolation | the other tenant untouched and absent from answers and tool arguments | 100% |
 | latency p95 | one turn, end to end | ≤ 15 s |
 
-Baseline (`evals/results/agent-qwen3_8b-*.json`, RTX 5050 8 GB):
+`evals/agent_holdout.yaml` (19 cases) holds different phrasings that were never used to
+tune the prompt. Check it whenever the prompt changes, to catch overfitting:
+`--dataset evals/agent_holdout.yaml`.
 
-- **Tool selection** 98.6%.
-- **Arguments** 98.1%.
-- **Task success** 98.0%.
-- **Faithfulness** 98.6%.
-- **Isolation** 100%.
-- **Latency** p50 10.2 s, **p95 31.9 s (fails the target)**, with a mean of 2,682 tokens
-  per turn.
+Results on qwen3:8b with an RTX 5050 8 GB (`evals/results/`):
 
-The five misses are real model errors:
+| | Thinking on (first baseline) | Thinking off (default) | Held-out, thinking off |
+|---|---|---|---|
+| tool selection | 98.6% | 99.3% | 100% |
+| argument accuracy | 98.1% | 96.4% | 100% |
+| task success | 98.0% | 98.6% | 100% |
+| faithfulness | 98.6% | 99.3% | 100% |
+| isolation | 100% | 100% | 100% |
+| latency p50 / p95 | 10.2 s / **31.9 s** | 1.1 s / 2.1 s | 1.2 s / 1.9 s |
 
-- "German" was passed instead of `de`.
-- "hide tips" was not mapped to `show_tips`.
-- A delete was confirmed in prose instead of with the gated tool.
-- A "purple" theme request was mistaken for a brand colour.
-- A template request got a setting error instead of a permission refusal.
+**How p95 went from 31.9 s to 2.1 s:**
+
+- **Thinking off** (`LLM_THINKING=false`, sent as `reasoning_effort: none`). qwen3's
+  reasoning phase cost 4–7 s per model request, at 2–3 requests per turn. On the
+  held-out set, thinking on scored no better (faithfulness 94.7% against 100%) at
+  p95 20 s. Set `LLM_THINKING=true` to compare.
+- **Intent classifier fixed.** Requests not phrased as questions ("I'd like the settings
+  page dark", "get rid of the dashboard") were being treated as reads, so the agent
+  wasn't offered write tools. Now only questions and show/list requests count as reads.
+  Erring towards write is safe, because it only exposes tools the role already allows.
+- **Explicit instructions** that thinking used to compensate for:
+  - Pass the user's value as-is and let the tool reject it. Never pick another value or
+    another page.
+  - Call gated tools directly, because they only create a confirmation request.
+  - Languages are ISO codes, and templates apply tenant-wide.
+
+**Remaining misses** (3 of 147) are model errors:
+
+- "German" was passed and the service coerced it to `de`.
+- "the dash board" was flipped to light instead of set to dark.
+- One "remove the settings page" was asked back as ambiguous rather than gated.
 
 To compare a model or prompt change:
 
@@ -386,18 +405,20 @@ docker compose --profile eval run --rm evals --compare evals/results/<baseline>.
 
 `--only <text>` and `--limit N` run a subset. The command exits 1 when a threshold is missed.
 
-**Load test** (Locust, read-only traffic, so dev data is never changed): 2 users for 3
-minutes on qwen3:8b with an 8 GB GPU.
+**Load test** (Locust, read-only traffic, so dev data is never changed), qwen3:8b on an 8 GB
+GPU, 3 minutes per run:
 
-| `OLLAMA_NUM_PARALLEL` | model turns/min | p50 | p95 | VRAM |
-|---|---|---|---|---|
-| 1 | 5.3 | 17 s | 21 s | 5.6 GB |
-| 2 (default) | 7.3 | 11 s | 20 s | 6.2 GB |
+| Setup | Users | Model turns/min | p50 | p95 | Errors |
+|---|---|---|---|---|---|
+| thinking on, `OLLAMA_NUM_PARALLEL=1` | 2 | 5.3 | 17 s | 21 s | 0 |
+| thinking on, `OLLAMA_NUM_PARALLEL=2` | 2 | 7.3 | 11 s | 20 s | 0 |
+| thinking off, `OLLAMA_NUM_PARALLEL=2` (default) | 8 | 53 | 2.8 s | 7.7 s | 2.5% (503 shed) |
 
-Overloading it showed abandoned turns piling up behind the GPU (one took 112 s), so the
-API now admits at most `MAX_CONCURRENT_RUNS` turns per process (default 4). Others wait
-up to `RUN_QUEUE_SECONDS` (default 5), then get `503` with `Retry-After`. Use
-`--service-ports` to open Locust's web UI at http://localhost:8089.
+`OLLAMA_NUM_PARALLEL=2` gives 40% more throughput for 0.6 GB more VRAM (6.2 of 8 GB).
+Overloading showed abandoned turns piling up behind the GPU (one took 112 s). So the API
+admits at most `MAX_CONCURRENT_RUNS` turns per process (default 4). Others wait up to
+`RUN_QUEUE_SECONDS` (default 5), then get `503` with `Retry-After`, which is where the 8-user
+errors come from. Use `--service-ports` to open Locust's web UI at http://localhost:8089.
 
 ## Production
 
@@ -470,7 +491,8 @@ See `.env.example`. Key settings: `OLLAMA_MODEL` (default `qwen3:8b`; alternativ
 `JWT_JWKS_URL`, `REDIS_URL`, `RATE_LIMIT_*`, `DOCKER_DB_PASSWORD`, `LOG_LEVEL`,
 `GRAPH_MODE` (off/advisory/enforce), `NEO4J_PASSWORD`, `RABBITMQ_PASSWORD`,
 `RECONCILE_INTERVAL_SECONDS`, `EMBEDDING_MODEL` (default `nomic-embed-text`), `KNOWLEDGE_MODEL_CONCEPTS`,
-`KNOWLEDGE_WATCH_SECONDS`, `OLLAMA_NUM_PARALLEL` (default 2), `MAX_CONCURRENT_RUNS`,
+`KNOWLEDGE_WATCH_SECONDS`, `LLM_THINKING` (default false), `OLLAMA_NUM_PARALLEL` (default 2),
+`MAX_CONCURRENT_RUNS`,
 `RUN_QUEUE_SECONDS`, `UI_PUBLIC_API_URL` (the address browsers use for the UI backend;
 set it when the UI isn't on localhost).
 

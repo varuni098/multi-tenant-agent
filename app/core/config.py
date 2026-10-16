@@ -32,6 +32,9 @@ class Settings(BaseSettings):
 
     ollama_fallback_model: str = ""  # e.g. llama3.1:8b; empty = no fallback
     llm_timeout_seconds: float = 120
+    # Reasoning ('thinking') before each answer. Off by default: on qwen3:8b it costs 4-7 s per
+    # model request (2-3 per turn) for no measured accuracy gain on the agent eval.
+    llm_thinking: bool = False
     max_requests_per_run: int = 8
     max_tool_calls_per_run: int = 10
     breaker_failure_threshold: int = 3

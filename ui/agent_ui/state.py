@@ -280,6 +280,14 @@ class State(rx.State):
                             self._apply_settings(view)
                         if event != "ready":
                             yield rx.toast.info(_describe(event, data), duration=4000)
+                except api.ApiError as e:
+                    if e.status == 401:  # token expired or revoked: sign out instead of retrying forever
+                        async with self:
+                            if self._token == token:
+                                self._token, self.email, self.role = "", "", ""
+                        yield rx.toast.warning("Your session expired. Please sign in again.")
+                        yield rx.redirect("/")
+                        return
                 except Exception:
                     pass
                 async with self:

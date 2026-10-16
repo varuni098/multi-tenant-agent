@@ -187,3 +187,20 @@ def test_circuit_breaker(monkeypatch):
     assert breaker.allow()  # trial call after cooldown
     breaker.record_success()
     assert breaker.failures == 0
+
+
+@pytest.mark.parametrize(
+    ("prompt", "intent"),
+    [
+        ("I'd like the settings page in dark mode", "write"),
+        ("Get rid of the dashboard page", "write"),
+        ("We no longer need the settings page, please drop it", "write"),
+        ("Could the login screen go dark?", "write"),
+        ("Move our tenant onto the dark_first template", "write"),
+        ("Are hints displayed on the dashboard?", "read"),
+        ("Which language is configured for the settings page?", "read"),
+        ("Show me the theme of every page", "read"),
+    ],
+)
+def test_requests_not_phrased_as_questions_count_as_writes(prompt, intent):
+    assert classify(prompt, ["login", "dashboard", "settings"]) == intent
