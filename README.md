@@ -18,12 +18,14 @@ app/
               rules, queries, outbox relay, sync worker, reconciler
   graph_mcp/  graph-mcp: read-only graph tools, search_docs, the can_apply write gate
   knowledge/  docs ingestion (loaders, chunker, embeddings, concepts), GraphRAG retrieval, eval
+  live/       live updates: RabbitMQ -> Redis bridge, per-tenant pub/sub bus
+  agent/      Pydantic AI agent + tools, model warm-up
+  workflow/   LangGraph request flow (emits progress events for streaming)
+  api/        FastAPI app: API v1 (chat, streaming, sessions, settings, audit, events)
+ui/           Reflex web UI (chat with tool trace, settings browser, audit log)
 ontology/     ontology.yaml (classes, relationships, cardinality, rules, aliases, concepts)
 docs/         product/ (shared) and tenants/<tenant_id>/ (private) documentation
 evals/        retrieval.yaml: labelled questions for the retrieval eval
-  agent/      Pydantic AI agent + tools, model warm-up
-  workflow/   LangGraph request flow
-  api/        FastAPI app (/v1/chat, /v1/chat/confirm, /health, /ready)
 migrations/   Alembic
 tests/        pytest (SQLite + scripted FunctionModel, no GPU/MySQL/Redis needed)
 run_workflow.py   interactive CLI
@@ -52,23 +54,24 @@ Effective value of a setting: **page override → tenant default → template �
 ## Architecture
 
 ```
-client --JWT--> app (harness + agent) --MCP--> tenant-mcp --> MySQL --outbox--> outbox-relay --> RabbitMQ
-                  |   |   \--MCP + can_apply gate--> graph-mcp --> Neo4j <-- graph-sync <------/
-                  |   \--> Ollama (qwen3:8b)                       (re-projects tenants, reconciles)
-                  \--> Redis                     external MCP clients (user JWT) -> tenant-mcp / graph-mcp
+ui (Reflex) --JWT--> app (harness + agent) --MCP--> tenant-mcp --> MySQL --outbox--> outbox-relay --> RabbitMQ
+                         |   |   \--MCP + can_apply gate--> graph-mcp --> Neo4j <-- graph-sync <-------/ |
+                         |   \--> Ollama (qwen3:8b)                       (re-projects, reconciles)       |
+                         \--> Redis <-- live-bridge <-----------------------------------------------------/
+                          (sessions, limits, live pub/sub)   external MCP clients (user JWT) -> tenant-mcp / graph-mcp
 ```
 
 - **tenant-mcp** (`app/mcp_server/`) is the only service with database credentials, and
   the only one on the `data` network with MySQL. It serves the 12 tools over MCP
-  (streamable HTTP) and two internal routes the app uses: `/internal/whoami` and
-  `/internal/confirm`.
+  (streamable HTTP) and internal routes for the app: `/internal/whoami`,
+  `/internal/confirm`, and the read-only views `/internal/settings` and `/internal/audit`.
 - **The agent app** has no database access. Every call to tenant-mcp carries a signed
   `X-Tenant-Context` (tenant, user, role, purpose, request ID; HS256 with
   `MCP_CONTEXT_SECRET`). The server verifies it and re-checks membership, tenant status
   and role in the database.
 - **Purposes** bind credentials to endpoints. `auth` is for whoami, `agent` for MCP
-  tools, and `confirm` for executing a confirmation. An agent run can never approve its
-  own gated action.
+  tools, `confirm` for executing a confirmation, and `api` for the REST views. An agent
+  run can never approve its own gated action, and `api` credentials can't call tools.
 - **Every MCP call** is logged server-side in `tool_calls` (actor, channel, tool,
   redacted args, outcome, duration, request ID), including denied and failed calls.
 - **Tool annotations** (`readOnlyHint`, `destructiveHint`, `idempotentHint`) come from the
@@ -212,22 +215,93 @@ JWT -> rate limit -> check_tenant -> guard_input -> classify -> run_agent | off_
 
 | Service       | Purpose                                      | Dev host port |
 |---------------|----------------------------------------------|---------------|
-| `app`         | FastAPI                                      | 8000          |
+| `app`         | FastAPI (API v1)                             | 8000          |
+| `ui`          | Reflex web UI                                | 3000 (+3001 dev) |
+| `live-bridge` | RabbitMQ -> Redis live channel               | –             |
 | `ollama`      | Local LLM server (GPU)                       | 11435         |
 | `ollama-pull` | One-shot: pulls `$OLLAMA_MODEL`              | –             |
 | `mysql`       | MySQL 8                                      | 3308          |
 | `tenant-mcp`  | MCP tool server; only service with DB access | 8001          |
 | `graph-mcp`   | Graph tools + can_apply gate (Neo4j only)    | 8002          |
 | `neo4j`       | Knowledge graph                              | 7475 / 7688   |
-| `rabbitmq`    | Event broker (outbox -> graph-sync)          | 15673 (UI)    |
+| `rabbitmq`    | Event broker (outbox -> graph-sync, live-bridge) | 15673 (UI) |
 | `outbox-relay`| MySQL outbox -> RabbitMQ                     | –             |
 | `graph-sync`  | RabbitMQ -> Neo4j projection, reconciler     | –             |
 | `knowledge`   | Docs ingestion (embeddings, concepts)        | –             |
-| `redis`       | Sessions, rate limits, confirmations         | –             |
+| `redis`       | Sessions, rate limits, confirmations, live pub/sub | –       |
 | `migrate`     | One-shot: `alembic upgrade head` (+ seed in dev) | –         |
 
 On startup the app loads the model onto the GPU in the background, so the first
-request isn't slow. `/ready` reports database and Ollama reachability.
+request isn't slow.
+
+## API v1
+
+Interactive docs at http://localhost:8000/docs (OpenAPI at `/openapi.json`).
+
+| Endpoint | Who | What |
+|----------|-----|------|
+| `POST /v1/chat` | any member | one turn, answered when complete |
+| `POST /v1/chat/stream` | any member | the same turn as Server-Sent Events (below) |
+| `POST /v1/chat/confirm` | the user who asked | carry out a pending destructive action |
+| `GET` / `DELETE /v1/sessions/{id}` | the session's owner | the caller's own turns; other users get 404 |
+| `GET /v1/me` | any member | tenant, email, effective role, pages |
+| `GET /v1/settings` | any member | effective settings of every page plus tenant defaults, with sources |
+| `GET /v1/audit` | admin | `kind=changes` (setting changes) or `kind=tool_calls`, newest first; page with `before_id` = `next_before_id`; filter by `actor`, `page_name` |
+| `GET /v1/events` | any member | live tenant changes as Server-Sent Events (below) |
+| `GET /health`, `GET /ready` | public | liveness; readiness of Ollama, tenant-mcp and Redis (`graph` is reported but optional: writes fail closed without it) |
+
+**Errors** always have one shape, with the HTTP status mapped to a code (`unauthorized`,
+`forbidden`, `not_found`, `conflict`, `invalid_request`, `rate_limited`, `unavailable`):
+
+```json
+{"error": {"code": "forbidden", "message": "Only admins can read the audit log.", "request_id": "..."}}
+```
+
+**Versioning.** Everything under `/v1` changes only additively (new endpoints, optional
+fields, event types). A breaking change ships as `/v2` alongside `/v1`, and `/v1`
+responses then carry a `Deprecation` header for at least one release before removal.
+Clients should ignore unknown fields and event types.
+
+**Streaming chat** (`/v1/chat/stream`) sends `start`, then `intent` and `thinking`, then
+`tool_start` / `tool_end` for each tool call (outcome `ok`, `changed`, `denied`,
+`needs_confirmation` or `error`), then `result` (the same body as `/v1/chat`) and
+`done`. The answer arrives whole in `result`, because the output validator checks each
+draft against what actually happened and may reject it. Streaming draft tokens would
+show text that might be retracted. Confirmation tokens appear only in `result`. If the
+client disconnects, the turn still finishes, so nothing is left half-applied.
+
+```bash
+curl -N -X POST http://localhost:8000/v1/chat/stream -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d "{\"prompt\": \"Make the dashboard dark\"}"
+```
+
+**Live updates** (`/v1/events`). Every committed change goes MySQL outbox -> RabbitMQ ->
+`live-bridge` -> Redis pub/sub (`live:<tenant_id>`) -> the API stream. It doesn't matter
+who made the change (agent, MCP client or another user). Events are `setting.changed`,
+`page.created`, `page.deleted` and `tenant.template_changed`, with `{page_name, key,
+after, actor, at}`. Request IDs and other payload fields stay server-side. The bridge
+uses an exclusive, non-durable queue, so nothing piles up while nobody is watching.
+Streams end after 15 minutes; reconnect (re-authenticating) to continue.
+
+## Web UI
+
+http://localhost:3000, served by Reflex (`ui/`).
+
+- **Sign in.** In dev, pick a seeded user. Otherwise paste a bearer token. The token
+  lives only in the UI backend (a backend-only state var) and never reaches the browser.
+- **Chat.** Each tool call appears live as it runs (`set_theme(page_name=login,
+  theme=dark) → changed`), and answers show their documentation sources. Destructive
+  actions open a confirmation dialog.
+- **Settings.** Every page's effective values and where they come from (page, template,
+  default), with a preview card per page. The UI itself wears the theme of the page you
+  pick ("UI follows", default `dashboard`). When anyone changes that page, the UI
+  switches theme instantly and shows a toast.
+- **Audit** (admins). Setting changes and tool calls, with paging.
+
+The UI talks only to the agent API (`AGENT_API_URL`), never to MCP servers or
+databases. In dev, Vite (3000) and the Reflex backend (3001) hot-reload on edits. In
+production, `reflex run --env prod --single-port` serves both on 3000, and dev login is
+off. Reflex's `bun` comes from the official image at build time, so nothing is
+downloaded when the container starts.
 
 ## Development (auto-reload)
 
@@ -259,8 +333,8 @@ Optional git hooks: `pip install pre-commit && pre-commit install`.
 docker compose -f compose.yml -f compose.prod.yml up -d --build
 ```
 
-No reload, 2 uvicorn workers, restart policies and resource limits; only port
-8000 is published. `APP_ENV=prod` requires a real `JWT_SECRET` (or `JWT_JWKS_URL`)
+No reload, 2 uvicorn workers, restart policies and resource limits; only ports
+8000 (API) and 3000 (UI) are published. `APP_ENV=prod` requires a real `JWT_SECRET` (or `JWT_JWKS_URL`)
 and disables local token issuing.
 
 ## Use it
@@ -324,7 +398,8 @@ See `.env.example`. Key settings: `OLLAMA_MODEL` (default `qwen3:8b`; alternativ
 `JWT_JWKS_URL`, `REDIS_URL`, `RATE_LIMIT_*`, `DOCKER_DB_PASSWORD`, `LOG_LEVEL`,
 `GRAPH_MODE` (off/advisory/enforce), `NEO4J_PASSWORD`, `RABBITMQ_PASSWORD`,
 `RECONCILE_INTERVAL_SECONDS`, `EMBEDDING_MODEL` (default `nomic-embed-text`), `KNOWLEDGE_MODEL_CONCEPTS`,
-`KNOWLEDGE_WATCH_SECONDS`.
+`KNOWLEDGE_WATCH_SECONDS`, `UI_PUBLIC_API_URL` (the address browsers use for the UI backend;
+set it when the UI isn't on localhost).
 
 ## GPU
 

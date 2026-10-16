@@ -5,8 +5,9 @@ check_tenant -> guard_input -> classify -> run_agent | off_topic
 """
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TypedDict
+from typing import Any, NotRequired, TypedDict
 
 from langgraph.graph import END, StateGraph
 from pydantic_ai.exceptions import UnexpectedModelBehavior, UsageLimitExceeded
@@ -44,6 +45,13 @@ class State(TypedDict):
     session_id: str
     intent: Intent | None
     result: ChatResult | None
+    emit: NotRequired[Callable[[str, dict[str, Any]], None] | None]
+
+
+def _emit(state: State, event_type: str, **data: Any) -> None:
+    emit = state.get("emit")
+    if emit is not None:
+        emit(event_type, data)
 
 
 def check_tenant_node(state: State) -> State:
@@ -64,6 +72,7 @@ def guard_input_node(state: State) -> State:
 def classify_node(state: State) -> State:
     state["intent"] = classify(state["prompt"], list(state["caller"].page_names))
     log.info("[%s] intent=%s", state["request_id"], state["intent"])
+    _emit(state, "intent", intent=state["intent"])
     return state
 
 
@@ -78,7 +87,9 @@ def run_agent_node(state: State) -> State:
         identity=identity,
         request_id=state["request_id"],
         allowed_tools=allowed_tools(identity.role, intent, graph=graph_available()),
+        emit=state.get("emit"),
     )
+    _emit(state, "thinking", tools_offered=len(deps.allowed_tools))
     # A write request from a role with no write tools fails as a permission issue, not "rephrase"
     can_write = any(TOOL_POLICIES[t].writes for t in deps.allowed_tools)
     failure_reply = SAFE_FAILURE_REPLY if can_write or intent == "read" else NO_PERMISSION_REPLY
@@ -154,7 +165,14 @@ graph.add_edge("off_topic", END)
 app_graph = graph.compile()
 
 
-def run_workflow(prompt: str, caller: Caller, request_id: str, session_id: str) -> ChatResult:
+def run_workflow(
+    prompt: str,
+    caller: Caller,
+    request_id: str,
+    session_id: str,
+    emit: Callable[[str, dict[str, Any]], None] | None = None,
+) -> ChatResult:
+    """Run one turn. `emit` receives progress events (intent, tool calls) for streaming clients."""
     state: State = {
         "prompt": prompt,
         "caller": caller,
@@ -162,6 +180,7 @@ def run_workflow(prompt: str, caller: Caller, request_id: str, session_id: str) 
         "session_id": session_id,
         "intent": None,
         "result": None,
+        "emit": emit,
     }
     final = app_graph.invoke(state)
     result = final["result"]

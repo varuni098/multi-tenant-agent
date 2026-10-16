@@ -18,6 +18,7 @@ from fastmcp.exceptions import ToolError
 from fastmcp.server.dependencies import get_http_request
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel
+from sqlalchemy import select
 from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -313,6 +314,77 @@ async def confirm(request: Request) -> JSONResponse:
     except (confirmations.ConfirmationError, DomainError) as e:
         return JSONResponse({"error": str(e)}, status_code=409)
     return JSONResponse({"message": message})
+
+
+def _settings_view(p: Principal) -> dict[str, Any]:
+    tenant_id = p.identity.tenant_id
+    pages = svc.list_pages(tenant_id)
+    return {
+        "defaults": [s.model_dump() for s in svc.get_effective_settings(tenant_id)],
+        "pages": [
+            {"name": page.name, "settings": [s.model_dump() for s in svc.get_effective_settings(tenant_id, page.name)]}
+            for page in pages
+        ],
+    }
+
+
+@mcp.custom_route("/internal/settings", methods=["POST"])
+async def settings_view(request: Request) -> JSONResponse:
+    """Effective settings of every page plus tenant defaults, for the settings browser (purpose: api)."""
+    return JSONResponse(await anyio.to_thread.run_sync(_settings_view, request.state.principal))
+
+
+AUDIT_MAX = 200
+
+
+def _tool_calls(tenant_id: str, limit: int, before_id: int | None, actor: str | None) -> list[dict[str, Any]]:
+    with session_scope() as session:
+        stmt = select(ToolCall).where(ToolCall.tenant_id == tenant_id)
+        if before_id:
+            stmt = stmt.where(ToolCall.id < before_id)
+        if actor:
+            stmt = stmt.where(ToolCall.actor == actor)
+        rows = session.scalars(stmt.order_by(ToolCall.id.desc()).limit(limit))
+        return [
+            {
+                "id": r.id,
+                "actor": r.actor,
+                "channel": r.channel,
+                "tool": r.tool,
+                "args": r.args,
+                "outcome": r.outcome,
+                "duration_ms": r.duration_ms,
+                "request_id": r.request_id,
+                "at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ]
+
+
+def _audit(p: Principal, body: dict[str, Any]) -> list[dict[str, Any]]:
+    limit = max(1, min(int(body.get("limit") or 50), AUDIT_MAX))
+    before_id = int(body["before_id"]) if body.get("before_id") else None
+    actor = body.get("actor") or None
+    if body.get("kind") == "tool_calls":
+        return _tool_calls(p.identity.tenant_id, limit, before_id, actor)
+    entries = svc.get_change_history(
+        p.identity.tenant_id, body.get("page_name") or None, limit, before_id=before_id, actor=actor
+    )
+    return [e.model_dump(mode="json") for e in entries]
+
+
+@mcp.custom_route("/internal/audit", methods=["POST"])
+async def audit(request: Request) -> JSONResponse:
+    """Setting changes or tool calls for the caller's tenant, newest first (purpose: api, admin only)."""
+    p: Principal = request.state.principal
+    if p.identity.role != "admin":
+        return JSONResponse({"error": "Only admins can read the audit log."}, status_code=403)
+    try:
+        body = await request.json()
+        rows = await anyio.to_thread.run_sync(_audit, p, body if isinstance(body, dict) else {})
+    except (ValueError, TypeError):
+        return JSONResponse({"error": "Invalid audit query."}, status_code=400)
+    return JSONResponse({"items": rows})
 
 
 app = mcp.http_app(path="/mcp", stateless_http=True, json_response=True, middleware=[Middleware(AuthMiddleware)])

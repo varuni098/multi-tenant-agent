@@ -19,6 +19,8 @@ x-dev-watch: &dev-watch
         - .pytest_cache/
         - .mypy_cache/
         - .ruff_cache/
+        - ui/.web/
+        - ui/.states/
     - action: rebuild
       path: requirements.txt
     - action: rebuild
@@ -73,6 +75,24 @@ services:
     ports:
       - "8002:8002"     # for external MCP clients in dev
     command: ["uvicorn", "app.graph_mcp.server:app", "--host", "0.0.0.0", "--port", "8002", "--reload"]
+    develop: *dev-watch
+
+  live-bridge:
+    <<: *dev-build
+    develop: *dev-watch
+
+  # Dev: Vite with hot module reload on 3000, Reflex backend (reloads on .py edits) on 3001
+  ui:
+    <<: *dev-build
+    command: ["reflex", "run", "--env", "dev", "--backend-host", "0.0.0.0"]
+    ports:
+      - "3000:3000"
+      - "3001:3001"
+    environment:
+      UI_PUBLIC_API_URL: http://localhost:3001
+      UI_BACKEND_PORT: "3001"
+      # Dev login mints tokens for seeded users, so it needs the app's dev JWT secret
+      JWT_SECRET: ${JWT_SECRET:-dev-insecure-secret-change-me-0123456789}
     develop: *dev-watch
 
   app:

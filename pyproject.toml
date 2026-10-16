@@ -11,6 +11,9 @@ extend-exclude = ["migrations/script.py.mako"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM"]
 
+[tool.ruff.lint.isort]
+known-first-party = ["app", "agent_ui", "tests"]
+
 [tool.mypy]
 python_version = "3.12"
 packages = ["app"]
@@ -20,5 +23,5 @@ plugins = ["pydantic.mypy"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]
+pythonpath = [".", "ui"]
 addopts = "-q"

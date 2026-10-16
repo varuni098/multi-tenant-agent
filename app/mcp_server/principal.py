@@ -30,6 +30,8 @@ PUBLIC_PATHS = {"/health"}
 TENANT_PATH_PURPOSES = {
     "/internal/whoami": {"auth"},
     "/internal/confirm": {"confirm"},
+    "/internal/settings": {"api"},  # REST API reads for the UI
+    "/internal/audit": {"api"},
 }
 
 

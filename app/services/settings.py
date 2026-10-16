@@ -253,12 +253,23 @@ def set_theme(
     return set_setting(tenant_id, "theme", theme, page_name, actor=actor, request_id=request_id)
 
 
-def get_change_history(tenant_id: str, page_name: str | None = None, limit: int = 10) -> list[AuditEntry]:
+def get_change_history(
+    tenant_id: str,
+    page_name: str | None = None,
+    limit: int = 10,
+    *,
+    before_id: int | None = None,
+    actor: str | None = None,
+) -> list[AuditEntry]:
     with session_scope() as session:
         get_tenant(session, tenant_id)
         stmt = select(AuditLog).where(AuditLog.tenant_id == tenant_id)
         if page_name:
             stmt = stmt.where(func.lower(AuditLog.page_name) == page_name.strip().lower())
+        if before_id:
+            stmt = stmt.where(AuditLog.id < before_id)
+        if actor:
+            stmt = stmt.where(AuditLog.actor == actor)
         rows = session.scalars(stmt.order_by(AuditLog.id.desc()).limit(limit))
         return [
             AuditEntry(

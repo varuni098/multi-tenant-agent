@@ -56,6 +56,14 @@ services:
           cpus: "1"
           memory: 1g
 
+  live-bridge:
+    restart: unless-stopped
+
+  ui:
+    restart: unless-stopped
+    environment:
+      APP_ENV: prod # no dev login; sign in with a token from your IdP
+
   app:
     restart: unless-stopped
     environment:

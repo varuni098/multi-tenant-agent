@@ -60,6 +60,24 @@ def confirm(identity: Identity, token: str, request_id: str) -> str:
     return resp.json()["message"]
 
 
+def _api_post(identity: Identity, path: str, request_id: str, body: dict[str, Any] | None = None) -> Any:
+    """Read-only REST views for the UI (purpose api). Returns the JSON body; raises on errors."""
+    resp = _post(path, _headers(identity.tenant_id, identity.user_email, identity.role, "api", request_id), body)
+    if resp.status_code == 403:
+        raise PermissionError(resp.json().get("error", "Forbidden."))
+    if resp.status_code != 200:
+        raise TenantServiceUnavailable(f"Tenant service error ({resp.status_code}).")
+    return resp.json()
+
+
+def settings_view(identity: Identity, request_id: str) -> dict[str, Any]:
+    return _api_post(identity, "/internal/settings", request_id)
+
+
+def audit(identity: Identity, request_id: str, query: dict[str, Any]) -> list[dict[str, Any]]:
+    return _api_post(identity, "/internal/audit", request_id, query)["items"]
+
+
 def tenant_service_ready() -> bool:
     try:
         return httpx.get(f"{get_settings().tenant_mcp_base_url}/health", timeout=3).status_code == 200
@@ -121,33 +139,54 @@ async def _process_tool_call(ctx: RunContext[RunDeps], call_tool: CallToolFunc, 
     if name not in ctx.deps.allowed_tools:  # defence in depth; the filter already hides it
         return "You are not permitted to do that."
     log.info("[%s] %s(%s)", ctx.deps.request_id, name, redact(", ".join(f"{k}={v!r}" for k, v in args.items())))
+    ctx.deps.event("tool_start", tool=name, args=_redacted(args))
     refusal = await _gate(ctx, name, args)
     if refusal:
+        ctx.deps.event("tool_end", tool=name, outcome="denied", detail=refusal)
         return refusal
-    result = await call_tool(name, args)
+    try:
+        result = await call_tool(name, args)
+    except Exception:
+        ctx.deps.event("tool_end", tool=name, outcome="error")
+        raise
     if isinstance(result, dict):
         if result.get("confirmation_required"):
             pending = PendingConfirmation(
                 token=result["token"], tool=name, summary=result["summary"], expires_in=result["expires_in"]
             )
             ctx.deps.confirmations.append(pending)
+            ctx.deps.event("tool_end", tool=name, outcome="needs_confirmation", detail=pending.summary)
             # The model never sees the token
             return f"Confirmation required (not done yet): {pending.summary} The user must confirm before it happens."
         if result.get("changed") is True:
-            ctx.deps.actions.append(Action(tool=name, message=str(result.get("message", name)), result=result))
+            message = str(result.get("message", name))
+            ctx.deps.actions.append(Action(tool=name, message=message, result=result))
+            ctx.deps.event("tool_end", tool=name, outcome="changed", detail=message)
+            return result
+    ctx.deps.event("tool_end", tool=name, outcome="ok")
     return result
+
+
+def _redacted(args: dict[str, Any]) -> dict[str, Any]:
+    return {k: redact(v) if isinstance(v, str) else v for k, v in args.items()}
 
 
 async def _log_graph_call(ctx: RunContext[RunDeps], call_tool: CallToolFunc, name: str, args: dict[str, Any]) -> Any:
     if name not in ctx.deps.allowed_tools:
         return "You are not permitted to do that."
     log.info("[%s] graph %s(%s)", ctx.deps.request_id, name, redact(", ".join(f"{k}={v!r}" for k, v in args.items())))
-    result = await call_tool(name, args)
+    ctx.deps.event("tool_start", tool=name, args=_redacted(args))
+    try:
+        result = await call_tool(name, args)
+    except Exception:
+        ctx.deps.event("tool_end", tool=name, outcome="error")
+        raise
     if name == "search_docs":
         hits = result.get("result", []) if isinstance(result, dict) else result
         for hit in hits if isinstance(hits, list) else []:
             if isinstance(hit, dict) and {"rank", "title", "heading", "path"} <= hit.keys():
                 ctx.deps.citations.append(Citation(hit["rank"], hit["title"], hit["heading"], hit["path"]))
+    ctx.deps.event("tool_end", tool=name, outcome="ok")
     return result
 
 

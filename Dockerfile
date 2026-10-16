@@ -12,9 +12,15 @@ COPY requirements.txt requirements-dev.txt ./
 RUN pip install -r requirements.txt \
     && if [ "$INSTALL_DEV" = "true" ]; then pip install -r requirements-dev.txt; fi
 
+# bun for the Reflex UI, from the official image (no download at container start)
+COPY --from=oven/bun:1.4.2 /usr/local/bin/bun /usr/local/bin/bun
+
 RUN useradd --create-home appuser
 COPY --chown=appuser:appuser . .
-RUN chown appuser:appuser /app
+# Writable dirs for the UI: frontend build cache (a named volume) and Reflex's data dir
+RUN chown appuser:appuser /app \
+    && mkdir -p /app/ui/.web /home/appuser/.local/share/reflex \
+    && chown -R appuser:appuser /app/ui /home/appuser/.local
 USER appuser
 
 EXPOSE 8000

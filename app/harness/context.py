@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -72,3 +73,9 @@ class RunDeps:
     citations: list[Citation] = field(default_factory=list)
     verify_retries: int = 0
     verification_failed: bool = False
+    # Progress events for streaming clients: emit(event_type, data). Never carries tokens or secrets.
+    emit: Callable[[str, dict[str, Any]], None] | None = None
+
+    def event(self, event_type: str, **data: Any) -> None:
+        if self.emit is not None:
+            self.emit(event_type, data)

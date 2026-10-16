@@ -6,7 +6,8 @@
 #   data:     MySQL      <- migrate, tenant-mcp, outbox-relay, graph-sync
 #   graph:    Neo4j      <- graph-mcp, graph-sync
 #   broker:   RabbitMQ   <- outbox-relay, graph-sync
-#   services: app, tenant-mcp, graph-mcp, redis, ollama
+#   services: app, tenant-mcp, graph-mcp, redis, ollama, ui
+#   live-bridge is on broker + services: RabbitMQ events -> Redis live channel
 name: multi-tenant-agent
 
 x-db-env: &db-env
@@ -241,6 +242,43 @@ services:
       ollama-pull:
         condition: service_completed_successfully
 
+  # Forwards committed tenant events to Redis pub/sub for the API's /v1/events stream
+  live-bridge:
+    build: .
+    command: ["python", "-m", "app.live.bridge"]
+    environment:
+      <<: *broker-env
+      REDIS_URL: redis://redis:6379/0
+    networks: [broker, services]
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Web UI (Reflex). Talks only to the agent API; tokens stay in the UI backend. It holds
+  # no secrets: users paste a token (or use dev login, which compose.override.yml enables).
+  ui:
+    build: .
+    working_dir: /app/ui
+    command: ["reflex", "run", "--env", "prod", "--single-port", "--backend-host", "0.0.0.0"]
+    ports:
+      - "3000:3000"
+    environment:
+      APP_ENV: ${APP_ENV:-dev}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      PYTHONPATH: /app
+      AGENT_API_URL: http://app:8000
+      UI_PUBLIC_API_URL: ${UI_PUBLIC_API_URL:-http://localhost:3000}
+      UI_BACKEND_PORT: "3000"
+      REFLEX_USE_SYSTEM_BUN: "true" # baked into the image
+    volumes:
+      - ui_web:/app/ui/.web # frontend build cache
+    networks: [services]
+    depends_on:
+      app:
+        condition: service_started
+
   # --- Integration tests: `docker compose --profile test run --rm tests` ---
 
   neo4j-test:
@@ -307,3 +345,4 @@ volumes:
   mysql_data:
   neo4j_data:
   rabbitmq_data:
+  ui_web:

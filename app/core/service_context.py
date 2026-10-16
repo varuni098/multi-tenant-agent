@@ -6,13 +6,13 @@ signature, then re-checks membership and role in the database.
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Literal
+from typing import Literal, get_args
 
 import jwt
 
 from app.core.config import get_settings
 
-Purpose = Literal["auth", "agent", "confirm"]
+Purpose = Literal["auth", "agent", "confirm", "api"]
 HEADER = "X-Tenant-Context"
 _ISSUER, _AUDIENCE = "agent-app", "tenant-mcp"
 
@@ -59,7 +59,7 @@ def verify_context(token: str) -> ServiceContext:
         )
     except jwt.PyJWTError as e:
         raise InvalidContext(f"Invalid service context: {e}") from e
-    if claims["purpose"] not in ("auth", "agent", "confirm"):
+    if claims["purpose"] not in get_args(Purpose):
         raise InvalidContext("Invalid service context purpose")
     return ServiceContext(
         tenant_id=claims["tenant_id"],

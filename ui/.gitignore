@@ -1,0 +1,4 @@
+.web/
+.states/
+assets/external/
+__pycache__/

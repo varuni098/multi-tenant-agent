@@ -10,3 +10,5 @@ env/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+ui/.web/
+ui/.states/
